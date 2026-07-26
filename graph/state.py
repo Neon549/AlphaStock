@@ -32,5 +32,9 @@ class TradingState(TypedDict):
     backtest_report: Optional[str]      # 回测文本报告
     backtest_summary: Optional[str]     # LLM对回测结果的中文解读
 
+    # 意图识别传入的分析维度控制
+    analyst_focus: Optional[str]      # technical / fundamental / sentiment / all
+    # 用户上传文档内容
+    user_doc_context: Optional[str]
     # 消息历史
     messages: Annotated[list, add_messages]

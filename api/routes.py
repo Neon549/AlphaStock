@@ -2,6 +2,7 @@
 # ============ 改动说明 ============
 # 新增: POST /api/v1/backtest 回测接口
 # 新增: BacktestRequest / BacktestResponse 模型
+# 新增: POST /api/v1/chat 自然语言对话接口（含意图识别）
 # 原有接口不变
 # ==================================
 
@@ -16,6 +17,7 @@ from api.multimodal import (
     retrieve_from_document,
     cleanup_session,
 )
+from api.intent_parser import parse_intent  # ← 意图识别
 
 router = APIRouter()
 memory = LongTermMemory()
@@ -126,12 +128,110 @@ class BacktestResponse(BaseModel):
     status: str = "success"
 
 
+# ── 新增：自然语言对话模型 ──────────────────
+
+
+class ChatRequest(BaseModel):
+    message: str
+    model: str = "smart"  # fast / smart / strong
+    session_id: Optional[str] = None
+
+
 # ── 原有接口 ────────────────────────────────
 
 
 @router.get("/health")
 def health_check():
     return {"status": "ok", "message": "Trading Agent System is running"}
+
+
+# ── 新增：自然语言对话接口 ──────────────────
+
+
+@router.post("/chat")
+def chat(request: ChatRequest):
+    """
+    自然语言对话入口，含意图识别。
+    用户无需输入股票代码，直接说"帮我分析宁德时代"即可。
+
+    路由逻辑：
+      意图1（开放性讨论）→ quick_llm 直接回答，不启动 Agent
+      意图2（操作性分析）→ 完整 LangGraph 流程，支持 analyst_focus 按需启动 Analyst
+      意图3（系统功能）  → 提示用户使用对应功能入口
+      意图4（信息不足）  → 追问用户
+    """
+    query = request.message.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="消息不能为空")
+
+    # ── Step 1: 意图解析 ──────────────────────────
+    parsed = parse_intent(query)
+    intent = parsed["intent"]
+    stock_code = parsed["stock_code"]
+    stock_name = parsed["stock_name"]
+    analyst_focus = parsed["analyst_focus"] or "all"
+    reply_hint = parsed["reply_hint"]
+
+    print(
+        f"[Chat] query={query!r} intent={intent} stock={stock_code} focus={analyst_focus}"
+    )
+
+    # ── Step 2: 路由 ──────────────────────────────
+
+    # 意图4：信息不足，追问用户
+    if intent == 4:
+        return {"role": "assistant", "content": reply_hint, "intent": intent}
+
+    # 意图1：开放性讨论，quick_llm 直接回答，不启动 Agent
+    if intent == 1:
+        import config.llm_config as llm_cfg
+
+        system_prompt = (
+            "你是一个专业的A股投资顾问，精通行业分析、商业模式解读和财报分析。"
+            "请用专业但易懂的语言回答用户的问题，可以发表自己的观点，"
+            "但需注明这是分析视角而非投资建议。"
+        )
+        response = llm_cfg.quick_llm.invoke(f"{system_prompt}\n\n用户：{query}").content
+        return {"role": "assistant", "content": response, "intent": intent}
+
+    # 意图3：系统功能，引导用户使用对应模块
+    if intent == 3:
+        return {
+            "role": "assistant",
+            "content": "请使用左侧功能菜单选择【回测】、【扫描】或【筛选】功能，输入对应参数即可执行。",
+            "intent": intent,
+        }
+
+    # 意图2：操作性分析，走完整 LangGraph 流程
+    _apply_model_config(request.model or "smart")
+
+    doc_context = ""
+    if request.session_id:
+        doc_context = retrieve_from_document(
+            request.session_id, f"{stock_code} 财务 分析"
+        )
+        if doc_context:
+            print(f"[Chat] 检索到用户上传文档：{len(doc_context)}字")
+
+    result = run_trading_analysis(
+        stock_code,
+        doc_context=doc_context,
+        analyst_focus=analyst_focus,  # ← 按需启动 Analyst
+    )
+
+    return {
+        "role": "assistant",
+        "intent": intent,
+        "stock_code": stock_code,
+        "stock_name": stock_name,
+        "analyst_focus": analyst_focus,
+        "decision": result.get("final_decision", ""),
+        "fundamental_report": result.get("fundamental_report", ""),
+        "technical_report": result.get("technical_report", ""),
+        "sentiment_report": result.get("sentiment_report", ""),
+        "researcher_analysis": result.get("bull_argument", ""),
+        "status": "success",
+    }
 
 
 @router.post("/analyze", response_model=AnalyzeResponse)

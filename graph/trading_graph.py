@@ -65,10 +65,25 @@ def _extract_company_names(*texts: str) -> set[str]:
 
 def analysts_node(state: TradingState) -> dict:
     stock_code = state["stock_code"]
+    # analyst_focus 由意图识别层写入 state，决定启动哪些 Analyst
+    # 取值：technical / fundamental / sentiment / all（默认）
+    focus = state.get("analyst_focus") or "all"
     total_start = time.time()
-    print(f"\n🚀 三个分析师并行启动：{stock_code}")
+
+    run_f = focus in ("all", "fundamental")
+    run_t = focus in ("all", "technical")
+    run_s = focus in ("all", "sentiment")
+
+    active = [
+        k for k, v in {"基本面": run_f, "技术面": run_t, "情绪": run_s}.items() if v
+    ]
+    print(f"\n🚀 分析师启动：{stock_code}，focus={focus}，运行：{active}")
+
+    SKIP_MSG = "[SKIPPED] 本次分析未启用此维度"
 
     def run_fundamental():
+        if not run_f:
+            return SKIP_MSG
         start = time.time()
         print("📊 [基本面分析师] 开始...")
         result = run_fundamental_analysis(stock_code)
@@ -76,6 +91,8 @@ def analysts_node(state: TradingState) -> dict:
         return result
 
     def run_technical():
+        if not run_t:
+            return SKIP_MSG
         start = time.time()
         print("📈 [技术面分析师] 开始...")
         result = run_technical_analysis(stock_code)
@@ -83,13 +100,17 @@ def analysts_node(state: TradingState) -> dict:
         return result
 
     def run_sentiment():
+        if not run_s:
+            return SKIP_MSG
         start = time.time()
         print("📰 [情绪分析师] 开始...")
         result = run_sentiment_analysis(stock_code)
         print(f"✅ 情绪分析完成，用时 {time.time() - start:.2f}s")
         return result
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+    # 只有实际需要运行的任务才占线程，跳过的瞬间返回
+    max_workers = sum([run_f, run_t, run_s]) or 1
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_fundamental = executor.submit(run_fundamental)
         future_technical = executor.submit(run_technical)
         future_sentiment = executor.submit(run_sentiment)
@@ -98,7 +119,7 @@ def analysts_node(state: TradingState) -> dict:
         technical_report = future_technical.result()
         sentiment_report = future_sentiment.result()
 
-    print(f"✅ 三个分析师全部完成，总用时 {time.time() - total_start:.2f}s")
+    print(f"✅ 分析师全部完成，总用时 {time.time() - total_start:.2f}s")
 
     return {
         "fundamental_report": fundamental_report,
@@ -114,12 +135,13 @@ def validation_node(state: TradingState) -> dict:
     technical_report = state.get("technical_report", "")
     sentiment_report = state.get("sentiment_report", "")
 
+    SKIP_MSG = "[SKIPPED] 本次分析未启用此维度"
     errors = []
-    if _contains_error(fundamental_report):
+    if fundamental_report != SKIP_MSG and _contains_error(fundamental_report):
         errors.append("基本面分析存在工具错误或数据不足")
-    if _contains_error(technical_report):
+    if technical_report != SKIP_MSG and _contains_error(technical_report):
         errors.append("技术面分析存在工具错误或数据不足")
-    if _contains_error(sentiment_report):
+    if sentiment_report != SKIP_MSG and _contains_error(sentiment_report):
         errors.append("情绪分析存在工具错误或数据不足")
 
     # 改为：三个都失败才中止
@@ -219,6 +241,7 @@ def _calc_position_size(decision_text: str, confidence: str) -> str:
 def _fix_position_consistency(text: str, confidence: str) -> str:
     """后处理：修正仓位和决策一致性"""
     import re
+
     is_buy = any(x in text for x in ["强烈买入", "买入"])
     is_watch = any(x in text for x in ["持有观望", "观望", "不买", "停止分析"])
     if is_buy and not is_watch:
@@ -296,6 +319,7 @@ def trader_node(state: TradingState) -> dict:
 
     print("✅ 交易决策完成并已存入记忆")
     return {"final_decision": final_decision}
+
 
 def backtest_node(state: TradingState) -> dict:
     """
@@ -496,13 +520,20 @@ backtest_graph = build_backtest_graph()
 trading_graph = build_trading_graph()
 
 
-def run_trading_analysis(stock_code: str, doc_context: str = "") -> dict:
+def run_trading_analysis(
+    stock_code: str,
+    doc_context: str = "",
+    analyst_focus: str = "all",
+) -> dict:
     """
     完整分析入口
-    doc_context: 用户上传文档的相关内容，注入到分析上下文
+    doc_context:    用户上传文档的相关内容，注入到分析上下文
+    analyst_focus:  意图识别层传入，控制启动哪些 Analyst
+                    取值：technical / fundamental / sentiment / all（默认）
     """
     initial_state = {
         "stock_code": stock_code,
+        "analyst_focus": analyst_focus,  # ← 新增
         "fundamental_report": None,
         "technical_report": None,
         "sentiment_report": None,
@@ -512,7 +543,6 @@ def run_trading_analysis(stock_code: str, doc_context: str = "") -> dict:
         "final_decision": None,
         "risk_assessment": None,
         "messages": [],
-        # 用户上传的文档内容，供各Agent参考
         "user_doc_context": doc_context if doc_context else "",
     }
     # Checkpoint thread_id：同一股票用同一ID，支持断点恢复

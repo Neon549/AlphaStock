@@ -114,10 +114,22 @@ def _calc_kdj_signal(stock_code: str) -> str:
 
         all_ok = k_ok and j_ok and above_ma20 and ma20_up
 
+        # 计算支撑位和压力位
+        # 支撑位：近20日最低点 + MA20 取较低者
+        recent_low  = round(float(df["low"].tail(20).min()), 2)
+        recent_high = round(float(df["high"].tail(20).max()), 2)
+        # 近5日低点作为短期支撑
+        short_low   = round(float(df["low"].tail(5).min()), 2)
+        short_high  = round(float(df["high"].tail(5).max()), 2)
+        support     = min(recent_low, ma20) if not above_ma20 else recent_low
+        resistance  = max(recent_high, ma20) if above_ma20 else recent_high
+
         lines = [
             f"数据日期：{date}",
             f"当前价格：¥{close}",
             f"MA20：¥{ma20}  {'📈 向上' if ma20_up else '📉 向下'}",
+            f"支撑位：¥{support}（近20日低点¥{recent_low}，短期低点¥{short_low}）",
+            f"压力位：¥{resistance}（近20日高点¥{recent_high}，短期高点¥{short_high}）",
             "",
             "KDJ超卖策略条件检测（需全部满足才触发买入）：",
             f"  K={k}  {'✅ 满足(K<25)' if k_ok else f'❌ 不满足(需<25，差{round(k-25,1)}点)'}",
