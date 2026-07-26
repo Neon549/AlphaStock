@@ -29,7 +29,7 @@ from langchain_openai import ChatOpenAI
 env_path = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(dotenv_path=env_path, override=True)
 
-DEEPSEEK_API_KEY  = os.getenv("DEEPSEEK_API_KEY")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
 
 if not DEEPSEEK_API_KEY:
@@ -40,9 +40,10 @@ if not DEEPSEEK_API_KEY:
 
 LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY", "")
 LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY", "")
-LANGFUSE_HOST       = os.getenv("LANGFUSE_HOST", "http://localhost:3000")
+LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", "http://localhost:3000")
 
 _langfuse = None
+
 
 def _get_langfuse():
     """懒加载 LangFuse 客户端，未配置时返回 None 不报错"""
@@ -53,6 +54,7 @@ def _get_langfuse():
         return None
     try:
         from langfuse import Langfuse
+
         _langfuse = Langfuse(
             public_key=LANGFUSE_PUBLIC_KEY,
             secret_key=LANGFUSE_SECRET_KEY,
@@ -82,16 +84,16 @@ def _trace(
         trace = lf.trace(
             name=f"alphastock/{name}",
             metadata={
-                "model":       model,
-                "success":     success,
+                "model": model,
+                "success": success,
                 "used_backup": used_backup,
-                "latency_ms":  round(latency_ms, 1),
+                "latency_ms": round(latency_ms, 1),
             },
         )
         trace.generation(
             name=name,
             model=model,
-            input=input_text[:2000],   # 防止太长
+            input=input_text[:2000],  # 防止太长
             output=output_text[:2000],
             metadata={"latency_ms": round(latency_ms, 1)},
         )
@@ -101,6 +103,7 @@ def _trace(
 
 
 # ── 模型工厂 ──────────────────────────────────────────────────────────
+
 
 def _make_deepseek(model: str, temperature: float = 0.1) -> ChatOpenAI:
     """创建 DeepSeek 模型实例"""
@@ -126,13 +129,12 @@ def _make_qwen(model: str, temperature: float = 0.1) -> ChatOpenAI:
 
 # ── 带自动降级 + LangFuse 追踪的 LLM 包装 ────────────────────────────
 
+
 def _msg_to_str(messages) -> str:
     """把 messages 转成可读字符串用于追踪"""
     try:
         if isinstance(messages, list):
-            return " | ".join(
-                getattr(m, "content", str(m))[:300] for m in messages
-            )
+            return " | ".join(getattr(m, "content", str(m))[:300] for m in messages)
         return str(messages)[:300]
     except Exception:
         return ""
@@ -149,8 +151,8 @@ class FallbackLLM:
 
     def __init__(self, primary, backup=None, name: str = "LLM"):
         self.primary = primary
-        self.backup  = backup
-        self.name    = name
+        self.backup = backup
+        self.name = name
 
     def invoke(self, messages, **kwargs):
         t0 = time.time()
@@ -246,7 +248,7 @@ class FallbackLLM:
 _qwen_backup = None
 if DASHSCOPE_API_KEY:
     try:
-        _qwen_backup = _make_qwen("qwen-plus")
+        _qwen_backup = _make_qwen("qwen3.7-max")
     except Exception:
         pass
 
@@ -273,12 +275,12 @@ deep_llm = FallbackLLM(
 # ── 模型路由表（给Agent查询用）────────────────────────────────────────
 
 MODEL_ROUTING = {
-    "technical_analyst":    "TechLens本地模型（DeepSeek降级）",
-    "fundamental_analyst":  "deepseek-reasoner（推理强）",
-    "sentiment_analyst":    "deepseek-chat（快速便宜）",
-    "validator":            "deepseek-reasoner（综合裁判）",
+    "technical_analyst": "TechLens本地模型（DeepSeek降级）",
+    "fundamental_analyst": "deepseek-reasoner（推理强）",
+    "sentiment_analyst": "deepseek-chat（快速便宜）",
+    "validator": "deepseek-reasoner（综合裁判）",
     "backtest_interpreter": "deepseek-reasoner（策略解读）",
-    "trader":               "deepseek-chat（快速决策）",
+    "trader": "deepseek-chat（快速决策）",
 }
 
 
@@ -291,6 +293,7 @@ def print_model_routing():
 
 
 # ── TechLens 本地推理客户端 ───────────────────────────────────────────
+
 
 class TechLensClient:
     """
@@ -311,10 +314,10 @@ class TechLensClient:
         resp = _requests.post(
             f"{self.base_url}/analyze",
             json={
-                "stock_code":     stock_code,
+                "stock_code": stock_code,
                 "history_result": history_result,
-                "price_result":   price_result,
-                "kdj_result":     kdj_result,
+                "price_result": price_result,
+                "kdj_result": kdj_result,
             },
             timeout=60,
         )
@@ -336,7 +339,9 @@ techlens_client = TechLensClient()
 print("✅ AlphaStock LLM配置加载完成")
 print(f"   主力：DeepSeek API {'✅' if DEEPSEEK_API_KEY else '❌'}")
 print(f"   备用：Qwen API {'✅' if DASHSCOPE_API_KEY else '❌（未配置，不影响运行）'}")
-print(f"   LangFuse：{'✅ ' + LANGFUSE_HOST if LANGFUSE_PUBLIC_KEY else '⚠️  未配置（不影响运行）'}")
+print(
+    f"   LangFuse：{'✅ ' + LANGFUSE_HOST if LANGFUSE_PUBLIC_KEY else '⚠️  未配置（不影响运行）'}"
+)
 print(
     f"   TechLens本地模型：{'✅ 在线' if techlens_client.is_available() else '⚠️ 离线（自动降级DeepSeek）'}"
 )
