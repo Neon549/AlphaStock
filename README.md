@@ -1,116 +1,171 @@
+# AlphaStock · A-Share Intelligent Research Assistant
+
+> Multi-agent stock analysis system combining fundamental, technical, and sentiment analysis with quantitative backtesting to support trading decisions.
+
+🌐 **Live Demo**: [alphastock.cloud](https://alphastock.cloud) · 📦 **Backend**: [Neon549/Alpha_stock](https://github.com/Neon549/Alpha_stock) · 🖥️ **Frontend**: [Neon549/Alpha_stock_frontend](https://github.com/Neon549/Alpha_stock_frontend)
+
 ---
-title: AlphaStock · 智能投研助手
-sdk: docker
-app_port: 7860
+
+## What It Does
+
+| Feature | Description |
+|---|---|
+| **Stock Analysis** | Input a ticker — three parallel agents (fundamental / technical / sentiment) debate and output a long/short verdict with position sizing |
+| **Quantitative Backtest** | KDJ+MACD / RSI / Bollinger Band strategies with grid-search parameter optimization (36 combinations); outputs Sharpe ratio, max drawdown, win rate |
+| **News Sentiment** | Real-time A-share news retrieval via BM25 + pgvector + RRF hybrid search; sentiment score feeds directly into the trading decision |
+| **Buy Signal Screener** | Daily scan across 2,000 stocks for KDJ oversold + golden-cross signals; alpha factor scoring (5-factor model, score ≥ 85 = priority watchlist) |
+| **Multimodal Input** | Chart image analysis via Qwen-VL-Plus |
+
 ---
 
-# AlphaStock · 智能投研助手
+## Architecture
 
-A 股多智能体分析系统，融合基本面、技术面、情绪面三路分析，结合量化回测辅助交易决策。
-
-## 能做什么
-
-- **个股分析**：输入股票代码，三路 Agent 并行分析，最终给出多空判断和仓位建议
-- **量化回测**：支持 KDJ_MACD / RSI / 布林带策略，自动搜索最优参数，输出夏普比率、最大回撤等指标
-- **新闻情绪**：RAG 混合检索（BM25 + pgvector + RRF）实时抓取 A 股新闻，情绪量化融入决策
-
-## 架构
-
-```text
-用户请求
+```
+User Request
    │
-   ├── 股票分析（LangGraph StateGraph）
-   │     ├── FundamentalAnalyst   PE/PB/ROE/营收增长
-   │     ├── TechnicalAnalyst     K线/趋势/量价（TechLens 1.5B 本地模型）
-   │     └── SentimentAnalyst     RAG新闻检索 + 情绪打分
-   │     validation_node          数据校验（防幻觉传播）
-   │     researcher_node          多空辩论
-   │     trader_node              最终决策 + 写入长期记忆
+   ├── Intent Recognition  (4-class: discussion / analysis / system / insufficient)
+   │     └── Slot Extraction  →  stock_code, analyst_focus, reply_hint
    │
-   └── 量化回测（独立子图）
-         backtest_node            Tushare数据拉取 + backtrader回测
-         interpreter_node         RAG策略知识检索 + LLM解读
-         optimizer_node           参数网格搜索（36种组合）
+   ├── Stock Analysis  (LangGraph StateGraph)
+   │     ├── FundamentalAnalyst    PE / PB / ROE / revenue growth
+   │     ├── TechnicalAnalyst      K-line / trend / volume  ← TechLens-1.5B local model
+   │     └── SentimentAnalyst      RAG news retrieval + sentiment scoring
+   │           validation_node     hallucination firewall  [ANALYSIS_OK / ABORT]
+   │           researcher_node     bull/bear debate
+   │           trader_node         final decision + long-term memory write
+   │
+   └── Quantitative Backtest  (independent subgraph)
+         backtest_node         AKShare data + backtrader engine
+         interpreter_node      RAG strategy knowledge + LLM interpretation
+         optimizer_node        grid search over 36 parameter combinations
 ```
 
-## 技术栈
+---
 
-| 模块 | 技术 |
-|------|------|
-| Agent 编排 | LangGraph + LangChain |
-| LLM | DeepSeek V3（主力）/ Qwen（备用，自动降级） |
-| 技术分析模型 | TechLens 1.5B（Qwen2.5 微调，本地推理） |
-| RAG 检索 | BM25 + pgvector + RRF 混合检索 |
-| 向量数据库 | PostgreSQL + pgvector |
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Agent Orchestration | LangGraph StateGraph |
+| LLM | DeepSeek V3 (primary) / Qwen (auto-fallback) |
+| Technical Analysis Model | TechLens-1.5B (Qwen3 fine-tuned, local inference) |
+| RAG Retrieval | BM25 + pgvector + RRF hybrid search |
+| Vector Store | PostgreSQL 14 + pgvector (50k-row LRU eviction) |
 | Embedding | shibing624/text2vec-base-chinese |
-| 回测引擎 | backtrader + quantstats |
-| 历史数据 | Tushare Pro（本地 CSV 缓存） |
-| 实时行情 | AKShare |
-| 长期记忆 | PostgreSQL |
-| 可观测性 | LangFuse（全链路 trace） |
-| 后端 API | FastAPI |
-| 部署 | Docker + 腾讯云 |
+| Backtest Engine | backtrader + quantstats |
+| Market Data | AKShare (real-time) |
+| Long-term Memory | PostgreSQL (conversation persistence) |
+| Observability | LangFuse v2 (full LLM trace via Docker) |
+| Auth | Google OAuth / GitHub OAuth / Email verification (Aliyun Direct Mail) |
+| Backend API | FastAPI |
+| Frontend | Streamlit |
+| Deployment | Tencent Cloud · Nginx · Let's Encrypt SSL · UptimeRobot |
 
-## 设计亮点
+---
 
-**幻觉防控**：股票名称走本地字典（1500 只 A 股），不依赖 LLM 推断；分析结果强制 `[ANALYSIS_OK]` / `[ANALYSIS_ABORT]` 标记，非法格式直接拦截。
+## Key Design Decisions
 
-**混合检索**：BM25 处理股票代码、指标名等精确词，pgvector 处理语义相似，RRF 融合两路排名，Faithfulness 达 0.952（vs 纯向量 0.854）。
+### Hallucination Control
+- Ticker names resolved against a local dictionary of 1,500+ A-share stocks — never inferred by the LLM
+- Every analyst output enforces `[ANALYSIS_OK]` / `[ANALYSIS_ABORT]` tagging; malformed or unsupported outputs are blocked before reaching downstream nodes
+- Tool layer validates all returned data types before they enter the LangGraph state
 
-**模型降级**：主力 DeepSeek 失败自动切 Qwen，TechLens 离线自动切 DeepSeek，服务不中断。
+### Hybrid Retrieval (RAG)
+BM25 handles exact-match terms (ticker codes, indicator names); pgvector handles semantic similarity; RRF merges both ranked lists without manual weight tuning.
 
-**回测与 Agent 融合**：回测引擎封装为 LangGraph 工具节点，"帮我回测 600487 的 RSI 策略"直接触发完整链路。
+Ablation results across four retrieval strategies (Recall@10):
 
-## 快速开始
+| Strategy | Recall@10 |
+|---|---|
+| BM25 only | 0.8448 |
+| Dense vector only | 0.8362 |
+| Simple weighted mix | ~0.79 |
+| **Hybrid + RRF** | **0.8707** ✅ |
+
+### Structured Query Understanding
+Instead of a fragile query rewriter, user input goes through Intent Recognition (4-class LLM classifier) → Slot Extraction (`stock_code`, `analyst_focus`, `reply_hint`). The `analysts_node` reads `analyst_focus` and skips irrelevant analysts (returning `[SKIPPED]`), eliminating a second layer of LLM uncertainty.
+
+### Graceful Degradation
+- DeepSeek failure → auto-switch to Qwen
+- TechLens offline → auto-switch to DeepSeek for technical analysis
+- Any analyst `ABORT` → node skipped, pipeline continues unblocked
+
+---
+
+## RAG Evaluation
+
+Full report: [`evaluation/EVAL_REPORT.md`](evaluation/EVAL_REPORT.md)
+
+Evaluated with **RAGAS 0.1.21** using Qwen as the Judge LLM (switched from DeepSeek after discovering DeepSeek does not support `n > 1`, causing `Answer Relevancy = nan`).
+
+| Metric | Dense-only | Hybrid (BM25 + pgvector + RRF) |
+|---|---|---|
+| **Faithfulness** | 0.854 | **0.952 ✅ (+10%)** |
+| Context Recall | 0.567 | 0.567 |
+| Context Precision | 0.527 | 0.487 |
+
+Development follows **EDD (Evaluation-Driven Development)**: every retrieval or prompt change runs `evaluation/evaluator.py` before merging.
+
+Online monitoring via LangFuse full-chain tracing. Alerting threshold: Faithfulness < 0.85 triggers review.
+
+---
+
+## Quick Start
 
 ```bash
+git clone https://github.com/Neon549/Alpha_stock
+cd Alpha_stock
 pip install -r requirements.txt
 ```
 
-配置 `.env`：
-
-```
+Configure `.env`:
+```env
 DEEPSEEK_API_KEY=your_key
 DASHSCOPE_API_KEY=your_key
 TUSHARE_TOKEN=your_token
 POSTGRES_DSN=postgresql://user:password@localhost:5432/alphastock
+LANGFUSE_PUBLIC_KEY=your_key
+LANGFUSE_SECRET_KEY=your_key
 ```
 
 ```bash
-python -c "from db import init_db; init_db()"  # 初始化数据库
+python -c "from db import init_db; init_db()"
 python main.py
 ```
 
-## API
+---
+
+## API Reference
 
 ```bash
-# 股票分析
+# Stock analysis
 curl -X POST http://localhost:8000/api/v1/analyze \
   -H "Content-Type: application/json" \
   -d '{"stock_code": "600519"}'
 
-# 量化回测
+# Quantitative backtest
 curl -X POST http://localhost:8000/api/v1/backtest \
   -H "Content-Type: application/json" \
   -d '{"stock_code": "600487", "strategy": "rsi", "start_date": "20220101", "end_date": "20241231"}'
+
+# Health check
+curl http://localhost:8000/api/v1/health
 ```
 
-## 回测策略
+---
 
-| 策略 | 买入 | 卖出 | 适用 |
-|------|------|------|------|
-| kdj_macd | KDJ 金叉 且 MACD 柱转正 | KDJ 死叉 或 MACD 柱转负 | 趋势行情 |
-| rsi | RSI < 30 | RSI > 70 | 震荡行情 |
-| boll | 价格上穿下轨 | 价格下穿上轨 | 区间震荡 |
+## Backtest Strategies
 
-## RAG 评估
+| Strategy | Entry Signal | Exit Signal | Best For |
+|---|---|---|---|
+| `kdj_macd` | KDJ golden cross + MACD histogram turns positive | KDJ death cross or MACD turns negative | Trending markets |
+| `rsi` | RSI < 30 | RSI > 70 | Mean-reversion / range-bound |
+| `boll` | Price crosses above lower band | Price crosses below upper band | Range-bound markets |
 
-详细报告见 [evaluation/EVAL_REPORT.md](evaluation/EVAL_REPORT.md)
+Backtest validation on 62 out-of-sample A-share stocks: max drawdown reduced from **24.6% → 15.2%** after adding position filters (-2% gap-down skip, 8% take-profit lock).
 
-| 指标 | 纯向量检索 | 混合检索（BM25+pgvector+RRF） |
-|------|-----------|------------------------------|
-| Faithfulness | 0.854 | **0.952** ✅ +10% |
-| Context Recall | 0.567 | 0.567 |
-| Context Precision | 0.527 | 0.487 |
+---
 
-在线监控通过 LangFuse 全链路追踪实现，上线前/后评估方案见 EVAL_REPORT.md。
+## Related Project
+
+**[TechLens-1.5B](https://github.com/Neon549/TechLens-1.5B)** — A Qwen3-1.7B model fine-tuned via SFT + DPO to serve as the local technical analyst. Eliminates cloud API latency (P50 8.5s → local) and reduces hallucinated price levels to 0% on the evaluation set. Integrated as the `TechnicalAnalyst` node with automatic DeepSeek fallback.
