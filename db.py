@@ -26,7 +26,7 @@ load_dotenv(dotenv_path=env_path, override=True)
 
 POSTGRES_DSN = os.getenv(
     "POSTGRES_DSN",
-    "postgresql://alphastock:alphastock@localhost:5432/alphastock",
+    "",
 )
 
 # ── 连接池（线程安全，min=2 max=10）──────────────────────────────────
