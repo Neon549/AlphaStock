@@ -36,33 +36,37 @@ def health():
 
 @app.on_event("startup")
 async def startup_event():
-    """延迟加载路由 + 后台初始化新闻系统，避免阻塞端口绑定"""
+    """同步加载 auth 路由，后台加载重依赖路由"""
     import threading
+
+    # auth 路由立即加载，保证登录注册随时可用
+    try:
+        from api.auth_routes import router as auth_router
+        app.include_router(auth_router, prefix="/api/v1")
+        print("[Startup] Auth 路由加载完成 ✅")
+    except Exception:
+        pass  # auth_routes 不存在时回退到 routes.py 里的 auth
 
     def _heavy_init():
         try:
-            # 1. 延迟加载业务路由（包含langchain/langgraph等重依赖）
+            # 延迟加载业务路由（包含 langchain/langgraph 等重依赖）
             from api.routes import router
-
             app.include_router(router, prefix="/api/v1")
             from api.auth_google import router as google_router
-
             app.include_router(google_router, prefix="/api/v1")
             print("[Startup] 业务路由加载完成 ✅")
 
-            # 2. 新闻系统
+            # 新闻系统
             from rag.news_indexer import start_news_system
-
             start_news_system(bulk_first=True, stream_interval=5, cleanup_hour=2)
             print("[Startup] 新闻系统启动完成 ✅")
         except Exception as e:
             print(f"[Startup] 后台初始化失败: {e}")
             import traceback
-
             traceback.print_exc()
 
     threading.Thread(target=_heavy_init, daemon=True).start()
-    print("[Startup] FastAPI已就绪（端口已绑定），业务模块后台加载中...")
+    print("[Startup] FastAPI已就绪，业务模块后台加载中...")
 
 
 if __name__ == "__main__":

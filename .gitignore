@@ -19,3 +19,11 @@ backtest/fundamental_cache/
 cache/
 reports/
 backtest/data_cache/
+".env" 
+"__pycache__/" 
+"*.pyc" 
+"cache/" 
+".env" 
+"__pycache__/" 
+"*.pyc" 
+"cache/" 

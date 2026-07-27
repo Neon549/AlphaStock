@@ -94,26 +94,15 @@ EVAL_DATASET = [
 
 def vector_only_retrieve(stock_code: str, query: str, top_k: int = 5):
     """只用 pgvector 语义检索，不走 BM25"""
-    from rag.retriever import (
-        _embed,
-        _vector_search,
-        _index_news_to_pgvector,
-        _parse_news_lines,
-    )
-    from tools.akshare_tools import get_stock_news
+    from rag.retriever import hybrid_retrieve_news
 
     try:
-        # 先拉新闻入库
-        raw = get_stock_news.invoke({"symbol": stock_code})
-        news_items = _parse_news_lines(raw)
-        if news_items:
-            _index_news_to_pgvector(stock_code, stock_code, news_items)
-
-        # 纯向量检索
-        results = _vector_search(stock_code, query, days=90, k=top_k)
-        return results if results else news_items[:top_k]
+        result_str = hybrid_retrieve_news(stock_code, query, top_k=top_k)
+        if not result_str:
+            return []
+        return [line.strip() for line in result_str.split("\n") if line.strip()]
     except Exception as e:
-        print(f"[向量检索] {stock_code} 失败: {e}")
+        print(f"[vector_only] 失败: {e}")
         return []
 
 
@@ -177,7 +166,12 @@ def run_ragas_eval(samples: list[dict], label: str) -> dict:
         from langchain_openai import ChatOpenAI
         from ragas.llms import LangchainLLMWrapper
         import os
-        llm = ChatOpenAI(model="deepseek-chat", openai_api_key=os.getenv("OPENAI_API_KEY"), openai_api_base=os.getenv("OPENAI_API_BASE"))
+
+        llm = ChatOpenAI(
+            model="deepseek-chat",
+            openai_api_key=os.getenv("OPENAI_API_KEY"),
+            openai_api_base=os.getenv("OPENAI_API_BASE"),
+        )
         ragas_llm = LangchainLLMWrapper(llm)
         for m in [faithfulness, answer_relevancy, context_recall, context_precision]:
             m.llm = ragas_llm

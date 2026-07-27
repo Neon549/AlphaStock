@@ -318,7 +318,28 @@ def retrieve_news(
     return "\n".join([f"【{r[1]} | {r[2]}】{r[0]}" for r in rows])
 
 
+def _table_exists(table: str) -> bool:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM information_schema.tables WHERE table_name = %s",
+                    (table,),
+                )
+                return cur.fetchone() is not None
+    except Exception:
+        return False
+
+
 def get_stats() -> dict:
+    if not _table_exists("news_vectors"):
+        return {
+            "total_news": 0,
+            "expire_days": NEWS_EXPIRE_DAYS,
+            "watch_stocks": len(WATCH_LIST),
+            "stream_running": _stream_running,
+            "pgvector": False,
+        }
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM news_vectors")
@@ -328,6 +349,7 @@ def get_stats() -> dict:
         "expire_days": NEWS_EXPIRE_DAYS,
         "watch_stocks": len(WATCH_LIST),
         "stream_running": _stream_running,
+        "pgvector": True,
     }
 
 
@@ -340,6 +362,10 @@ def start_news_system(
     cleanup_hour: int = 2,
 ):
     stats = get_stats()
+    if not stats.get("pgvector", True):
+        print("[NewsSystem] pgvector 未安装，新闻 RAG 功能不可用，跳过启动")
+        return
+
     if bulk_first and stats["total_news"] == 0:
         print("[NewsSystem] 新闻库为空，开始批量初始化...")
         bulk_index()

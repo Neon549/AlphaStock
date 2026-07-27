@@ -71,6 +71,22 @@ def load_backtest_skill(node: str = "all") -> str:
         return f"{strategy}\n\n---\n\n{interpreter}".strip()
 
 
+def load_skill_with_ref(skill_name: str, ref_name: str) -> str:
+    """
+    通用接口：加载 skills/{skill_name}/refs/{ref_name}.md + common_rules.md
+
+    调用方式：
+        load_skill_with_ref("stock_analysis", "fundamental_rules")
+        load_skill_with_ref("stock_analysis", "technical_rules")
+        load_skill_with_ref("stock_analysis", "sentiment_rules")
+    """
+    refs_dir = SKILLS_DIR / skill_name / "refs"
+    specific = _load_file(refs_dir / f"{ref_name}.md")
+    common = _load_file(refs_dir / "common_rules.md")
+    parts = [p for p in [common, specific] if p]
+    return "\n\n---\n\n".join(parts).strip()
+
+
 # ── 使用示例 ──────────────────────────────────────────────
 
 if __name__ == "__main__":
