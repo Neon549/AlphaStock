@@ -17,7 +17,10 @@ from api.auth import (
 )
 from db import execute
 
+from api.auth_reset import router as reset_router
+
 router = APIRouter()
+router.include_router(reset_router)
 
 
 # ── 认证 ──────────────────────────────────────────────────────────────
@@ -25,6 +28,7 @@ router = APIRouter()
 class AuthRequest(BaseModel):
     username: str
     password: str
+    email: str = ""
 
 
 class TokenRequest(BaseModel):
@@ -33,7 +37,7 @@ class TokenRequest(BaseModel):
 
 @router.post("/auth/register")
 def auth_register(request: AuthRequest):
-    result = _register(request.username, request.password)
+    result = _register(request.username, request.password, request.email)
     if not result["success"]:
         raise HTTPException(status_code=400, detail=result["message"])
     return result

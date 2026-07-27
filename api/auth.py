@@ -25,20 +25,20 @@ def _hash_password(password: str, salt: str) -> str:
 # ── 公开接口 ──────────────────────────────────────────────────────────
 
 
-def register(username: str, password: str) -> dict:
+def register(username: str, password: str, email: str = "") -> dict:
     """
     注册新用户
     返回：{success, message, token, username}
     """
     username = (username or "").strip()
     password = (password or "").strip()
+    email = (email or "").strip() or None
 
     if len(username) < 2:
         return {"success": False, "message": "用户名至少2个字符"}
     if len(password) < 4:
         return {"success": False, "message": "密码至少4个字符"}
 
-    # 检查用户名是否已存在
     row = execute(
         "SELECT username FROM users WHERE username = %s",
         (username,),
@@ -47,17 +47,19 @@ def register(username: str, password: str) -> dict:
     if row:
         return {"success": False, "message": "用户名已存在"}
 
+    if email:
+        row = execute("SELECT username FROM users WHERE email = %s", (email,), fetch="one")
+        if row:
+            return {"success": False, "message": "该邮箱已被注册"}
+
     salt = uuid.uuid4().hex
     password_hash = _hash_password(password, salt)
     token = uuid.uuid4().hex
     now = datetime.now().isoformat()
 
     execute(
-        """
-        INSERT INTO users (username, password_hash, salt, created_at)
-        VALUES (%s, %s, %s, %s)
-        """,
-        (username, password_hash, salt, now),
+        "INSERT INTO users (username, password_hash, salt, email, created_at) VALUES (%s, %s, %s, %s, %s)",
+        (username, password_hash, salt, email, now),
     )
     execute(
         "INSERT INTO tokens (token, username, created_at) VALUES (%s, %s, %s)",

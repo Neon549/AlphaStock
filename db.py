@@ -76,11 +76,13 @@ CREATE TABLE IF NOT EXISTS users (
     username      TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL DEFAULT '',
     salt          TEXT NOT NULL DEFAULT '',
+    email         TEXT,
     google_id     TEXT,
     token         TEXT,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_users_username  ON users(username);
+CREATE INDEX IF NOT EXISTS idx_users_email     ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id);
 CREATE INDEX IF NOT EXISTS idx_users_token     ON users(token);
 
@@ -90,6 +92,16 @@ CREATE TABLE IF NOT EXISTS tokens (
     username   TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- ── 密码重置 token ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    token      TEXT PRIMARY KEY,
+    username   TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    expires_at TIMESTAMPTZ NOT NULL,
+    used       BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_prt_username ON password_reset_tokens(username);
 
 -- ── 对话历史 ──────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS conversations (
