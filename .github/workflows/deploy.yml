@@ -1,0 +1,23 @@
+name: Deploy Backend
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.NEON_ALPHA }}
+          script: |
+            cd /home/ubuntu/Alpha_stock
+            git pull
+            source /home/ubuntu/venv/bin/activate
+            pip install -r requirements.txt -q
+            systemctl restart alphastock-api.service
+            echo "✅ Backend deployed successfully"
