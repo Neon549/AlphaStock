@@ -58,7 +58,7 @@ User Request
 | Observability | LangFuse v2 (full LLM trace via Docker) |
 | Auth | Google OAuth / GitHub OAuth / Email verification (Aliyun Direct Mail) |
 | Backend API | FastAPI |
-| Frontend | Streamlit |
+| Frontend | React 18 + Vite ([Neon549/Alpha_stock_frontend](https://github.com/Neon549/Alpha_stock_frontend)) |
 | Deployment | Tencent Cloud · Nginx · Let's Encrypt SSL · UptimeRobot |
 
 ---
