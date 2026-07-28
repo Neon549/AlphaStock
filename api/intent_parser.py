@@ -3,15 +3,28 @@ intent_parser.py
 放在 api/ 目录下，被 routes.py 调用
 
 功能：
-  1. 意图识别（4种）
-  2. 槽位抽取（股票代码/名称/分析重点）
-  3. 股票名称 → 代码 兜底查询
+  1. 规则层：毫秒级拦截明确意图（问候/系统指令/6位股票代码）
+  2. 意图识别（4种）
+  3. 槽位抽取（股票代码/名称/分析重点）
+  4. 股票名称 → 代码 兜底查询
 """
 
 import json
 from typing import Optional
 import re
 import config.llm_config as llm_cfg          # 用便宜的 V3，不用 R1
+
+# ─────────────────────────────────────────────
+# 规则层常量
+# ─────────────────────────────────────────────
+
+_GREETINGS = {"你好", "hi", "hello", "嗨", "哈喽", "hey", "谢谢", "感谢", "再见", "拜拜", "👋"}
+
+_SYSTEM_KEYWORDS = ["回测", "全市场扫描", "股票筛选", "扫描全市场", "买入信号", "信号扫描"]
+
+_TECHNICAL_KW = ["kdj", "macd", "均线", "技术面", "k线", "趋势", "ma20", "布林", "rsi", "成交量"]
+_FUNDAMENTAL_KW = ["净利润", "pe", "pb", "roe", "基本面", "财务", "营收", "市盈率", "市净率"]
+_SENTIMENT_KW = ["新闻", "情绪", "舆情", "情感", "消息", "利好", "利空"]
 
 
 # ─────────────────────────────────────────────
@@ -59,10 +72,11 @@ PARSE_PROMPT = """你是一个股票分析系统的意图解析器。
 # ─────────────────────────────────────────────
 
 # 启动时加载本地股票名称→代码映射表（2000只，覆盖主要A股）
-_STOCK_MAP: dict = {}
+_STOCK_MAP: dict = {}   # name → code
+_CODE_MAP: dict = {}    # code → name
 
 def _load_stock_map():
-    global _STOCK_MAP
+    global _STOCK_MAP, _CODE_MAP
     if _STOCK_MAP:
         return
     try:
@@ -72,8 +86,9 @@ def _load_stock_map():
         with open(cache_path, "r") as f:
             d = json.load(f)
         for item in d.get("data", []):
-            name = item["name"].replace(" ", "").replace("\u3000", "")
+            name = item["name"].replace(" ", "").replace("　", "")
             _STOCK_MAP[name] = item["code"]
+            _CODE_MAP[item["code"]] = name
         print(f"[IntentParser] 股票映射表加载完成，共 {len(_STOCK_MAP)} 只")
     except Exception as e:
         print(f"[IntentParser] 股票映射表加载失败: {e}")
@@ -86,7 +101,7 @@ def lookup_code_by_name(stock_name: str) -> Optional[str]:
     if not stock_name:
         return None
     # 1. 本地精确匹配（去空格）
-    clean = stock_name.replace(" ", "").replace("\u3000", "")
+    clean = stock_name.replace(" ", "").replace("　", "")
     if clean in _STOCK_MAP:
         return _STOCK_MAP[clean]
     # 2. 本地模糊匹配（包含关系）
@@ -106,6 +121,62 @@ def lookup_code_by_name(stock_name: str) -> Optional[str]:
 
 
 # ─────────────────────────────────────────────
+# 规则层
+# ─────────────────────────────────────────────
+
+def _detect_focus(query: str) -> Optional[str]:
+    """从文本中提取分析维度关键词"""
+    q = query.lower()
+    if any(kw in q for kw in _TECHNICAL_KW):
+        return "technical"
+    if any(kw in q for kw in _FUNDAMENTAL_KW):
+        return "fundamental"
+    if any(kw in q for kw in _SENTIMENT_KW):
+        return "sentiment"
+    return None
+
+
+def _rule_layer(query: str) -> Optional[dict]:
+    """
+    规则层：毫秒级拦截明确意图，搞不定返回 None 交给 LLM。
+
+    拦截顺序：
+      1. 过短输入 → intent 4
+      2. 明确问候/闲聊 → intent 1
+      3. 系统功能关键词 → intent 3
+      4. 包含6位A股代码 → intent 2（直接跳过 LLM）
+    """
+    q = query.strip()
+
+    # 1. 过短
+    if len(q) < 2:
+        return {"intent": 4, "stock_name": None, "stock_code": None,
+                "analyst_focus": None,
+                "reply_hint": "请问您想分析哪只股票？可以输入股票名称或6位代码。"}
+
+    # 2. 问候/闲聊
+    if q.lower() in _GREETINGS:
+        return {"intent": 1, "stock_name": None, "stock_code": None,
+                "analyst_focus": None, "reply_hint": None}
+
+    # 3. 系统功能
+    if any(kw in q for kw in _SYSTEM_KEYWORDS):
+        return {"intent": 3, "stock_name": None, "stock_code": None,
+                "analyst_focus": None, "reply_hint": None}
+
+    # 4. 包含6位A股代码（主板0/6开头，创业板300，科创板688）
+    match = re.search(r'\b([036]\d{5}|688\d{3})\b', q)
+    if match:
+        code = match.group(1)
+        name = _CODE_MAP.get(code)
+        focus = _detect_focus(q)
+        return {"intent": 2, "stock_name": name, "stock_code": code,
+                "analyst_focus": focus or "all", "reply_hint": None}
+
+    return None  # 规则搞不定，交给 LLM
+
+
+# ─────────────────────────────────────────────
 # 主函数
 # ─────────────────────────────────────────────
 
@@ -120,6 +191,11 @@ def parse_intent(query: str) -> dict:
         "reply_hint": str | None   # 意图4时的追问文案
     }
     """
+    # 0. 规则层先过——能拦截的不调 LLM
+    rule_result = _rule_layer(query)
+    if rule_result is not None:
+        return rule_result
+
     llm = llm_cfg.quick_llm
 
     # 1. 调 LLM 解析
@@ -139,9 +215,9 @@ def parse_intent(query: str) -> dict:
             "reply_hint": None,
         }
 
-    intent      = result.get("intent", 2)
-    stock_name  = result.get("stock_name")
-    stock_code  = result.get("stock_code")
+    intent        = result.get("intent", 2)
+    stock_name    = result.get("stock_name")
+    stock_code    = result.get("stock_code")
     analyst_focus = result.get("analyst_focus")
 
     # 2. LLM 给了名字但没给代码 → akshare 兜底查
