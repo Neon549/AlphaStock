@@ -21,3 +21,6 @@ PyMuPDF
 pdfplumber
 python-docx
 langgraph-checkpoint-sqlite
+langfuse
+psycopg2-binary
+httpx
