@@ -40,6 +40,7 @@ def _get_pool() -> psycopg2.pool.ThreadedConnectionPool:
                     minconn=2,
                     maxconn=10,
                     dsn=POSTGRES_DSN,
+                    connect_timeout=10,
                 )
                 print("✅ PostgreSQL 连接池已初始化")
     return _pool

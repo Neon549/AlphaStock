@@ -47,13 +47,18 @@ async def startup_event():
     except Exception:
         pass  # auth_routes 不存在时回退到 routes.py 里的 auth
 
+    try:
+        from api.auth_google import router as google_router
+        app.include_router(google_router, prefix="/api/v1")
+        print("[Startup] Google Auth 路由加载完成 ✅")
+    except Exception as e:
+        print(f"[Startup] Google Auth 路由加载失败: {e}")
+
     def _heavy_init():
         try:
             # 延迟加载业务路由（包含 langchain/langgraph 等重依赖）
             from api.routes import router
             app.include_router(router, prefix="/api/v1")
-            from api.auth_google import router as google_router
-            app.include_router(google_router, prefix="/api/v1")
             print("[Startup] 业务路由加载完成 ✅")
 
             # 新闻系统
