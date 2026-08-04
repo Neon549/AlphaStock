@@ -1,8 +1,10 @@
 import unittest
 from importlib import import_module
+from pathlib import Path
+from unittest.mock import patch
 
 from agent_runtime.agents.skill_loader import get_skill_version, load_analyst_skill
-from agent_runtime.skills.registry import skill_registry
+from agent_runtime.skills.registry import SkillManifest, SkillRegistry, skill_registry
 
 
 class _FakeResponse:
@@ -42,6 +44,30 @@ class SkillRegistryTests(unittest.TestCase):
         module_name, function_name = skill.entrypoint.split(":", 1)
         module = import_module(module_name)
         self.assertTrue(callable(getattr(module, function_name)))
+
+    def test_legacy_skill_entrypoint_falls_back_to_runtime_namespace(self):
+        registry = SkillRegistry.__new__(SkillRegistry)
+        registry._skills = {
+            "legacy-document-rag": SkillManifest(
+                name="legacy-document-rag",
+                description="test",
+                version="0.0.0",
+                trigger={},
+                permissions=(),
+                entrypoint="skills.document_rag.handler:run",
+                root=Path("."),
+                content_hash="test",
+            )
+        }
+        with patch("agent_runtime.skills.document_rag.handler.run", return_value={"ok": True}) as handler:
+            result = registry.execute(
+                "legacy-document-rag",
+                granted_permissions=(),
+                session_id="test",
+                query="test",
+            )
+        self.assertEqual(result, {"ok": True})
+        handler.assert_called_once_with(session_id="test", query="test")
 
 
 if __name__ == "__main__":

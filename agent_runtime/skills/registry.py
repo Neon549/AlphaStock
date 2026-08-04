@@ -143,7 +143,17 @@ class SkillRegistry:
         if not skill.entrypoint:
             raise ValueError(f"Skill {name} has no executable entrypoint")
         module_name, function_name = skill.entrypoint.split(":", 1)
-        handler: Callable[..., Any] = getattr(import_module(module_name), function_name)
+        try:
+            module = import_module(module_name)
+        except ModuleNotFoundError:
+            # Compatibility for manifests written before the runtime was moved
+            # under ``agent_runtime``.  This keeps an already deployed registry
+            # from breaking while the manifest is refreshed.
+            if module_name.startswith("skills."):
+                module = import_module(f"agent_runtime.{module_name}")
+            else:
+                raise
+        handler: Callable[..., Any] = getattr(module, function_name)
         return handler(**kwargs)
 
 
