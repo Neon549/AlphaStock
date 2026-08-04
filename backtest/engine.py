@@ -11,11 +11,11 @@
 
 import backtrader as bt
 import pandas as pd
-from pathlib import Path
+from config.runtime_paths import REPORTS_DIR
 from backtest.strategies import STRATEGY_MAP
 
-REPORT_DIR = Path(__file__).parent.parent / "reports"
-REPORT_DIR.mkdir(exist_ok=True)
+REPORT_DIR = REPORTS_DIR / "backtest"
+REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def run_backtest(
@@ -25,6 +25,7 @@ def run_backtest(
     commission: float = 0.001,
     printlog: bool = False,
     strategy_params: dict = None,  # 新增
+    generate_html_report: bool = True,
 ) -> dict:
     strategy_cls = STRATEGY_MAP.get(strategy_name)
     if strategy_cls is None:
@@ -94,20 +95,22 @@ def run_backtest(
 
     total_return_pct = (end_value - start_value) / start_value * 100
 
-    report_path = REPORT_DIR / f"{strategy_name}_report.html"
-    try:
-        import quantstats as qs
+    report_path = None
+    if generate_html_report:
+        report_path = REPORT_DIR / f"{strategy_name}_report.html"
+        try:
+            import quantstats as qs
 
-        qs.reports.html(
-            returns_series,
-            output=str(report_path),
-            title=f"A股回测报告 - {strategy_name.upper()}策略",
-            download_filename=str(report_path),
-        )
-        print(f"[Engine] 报告生成: {report_path}")
-    except Exception as e:
-        print(f"[Engine] 报告生成失败: {e}")
-        report_path = None
+            qs.reports.html(
+                returns_series,
+                output=str(report_path),
+                title=f"A股回测报告 - {strategy_name.upper()}策略",
+                download_filename=str(report_path),
+            )
+            print(f"[Engine] 报告生成: {report_path}")
+        except Exception as e:
+            print(f"[Engine] 报告生成失败: {e}")
+            report_path = None
 
     return {
         "strategy": strategy_name,

@@ -1,0 +1,13 @@
+{
+  "name": "document-rag",
+  "description": "Retrieve evidence from user-uploaded documents for a stock analysis. It returns section-aware chunks and page-level citations; it never modifies documents.",
+  "version": "1.0.0",
+  "trigger": {
+    "requires_session_document": true,
+    "keywords": []
+  },
+  "permissions": ["document:read"],
+  "entrypoint": "skills.document_rag.handler:run",
+  "prompt_files": ["SKILL.md"],
+  "version_files": ["SKILL.md", "handler.py"]
+}

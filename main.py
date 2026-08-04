@@ -3,11 +3,14 @@ import sys
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+# Database initialisation happens before the FastAPI server owns stdout.
+# Configure Windows consoles first so startup diagnostics never fail on emoji.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 from db import init_db
 
 init_db()  # 建表，幂等，重复执行无害
-
-sys.stdout.reconfigure(encoding="utf-8")
 
 app = FastAPI(
     title="AlphaStock · 智能投研助手",

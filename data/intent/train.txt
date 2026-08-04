@@ -1,0 +1,48 @@
+__label__discussion 比亚迪的商业模式怎么样
+__label__discussion 你怎么看新能源行业的竞争格局
+__label__discussion 银行股未来还有机会吗
+__label__discussion 茅台的品牌护城河强不强
+__label__discussion 说说人工智能板块的长期逻辑
+__label__discussion 为什么消费股最近比较弱
+__label__discussion 帮我解释一下市盈率
+__label__discussion ROE 高一定代表公司好吗
+__label__discussion 介绍一下价值投资的思路
+__label__discussion 光伏行业目前处于什么阶段
+__label__discussion 你认为券商板块的核心驱动是什么
+__label__discussion 聊聊半导体行业的投资逻辑
+__label__analysis 分析宁德时代
+__label__analysis 帮我看看贵州茅台值不值得买
+__label__analysis 平安银行技术面怎么样
+__label__analysis 分析一下比亚迪的基本面
+__label__analysis 立讯精密现在能不能买
+__label__analysis 招商银行 KDJ 和均线怎么看
+__label__analysis 评估一下隆基绿能的风险
+__label__analysis 帮我分析五粮液的财务情况
+__label__analysis 宁德时代最近趋势如何
+__label__analysis 看看美的集团的技术指标
+__label__analysis 分析京东方A的新闻影响
+__label__analysis 恒瑞医药基本面是否改善
+__label__system 帮我回测均线策略
+__label__system 我想做 KDJ 回测
+__label__system 扫描今天的买入信号
+__label__system 全市场扫描一下
+__label__system 帮我筛选新能源股票
+__label__system 进入回测模块
+__label__system 有哪些选股策略
+__label__system 查看策略列表
+__label__system 我想按行业筛选股票
+__label__system 跑一下 RSI 策略
+__label__system 获取今日候选股票
+__label__system 做一个布林带回测
+__label__insufficient 分析一只股票
+__label__insufficient 帮我看看这只股票
+__label__insufficient 给我投资建议
+__label__insufficient 我想买股票
+__label__insufficient 技术面怎么样
+__label__insufficient 基本面分析
+__label__insufficient 最近有什么机会
+__label__insufficient 帮我做分析
+__label__insufficient 看看行情
+__label__insufficient 这个能买吗
+__label__insufficient 帮我判断一下
+__label__insufficient 想了解一家公司

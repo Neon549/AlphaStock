@@ -10,8 +10,10 @@ intent_parser.py
 """
 
 import json
+import os
 from typing import Optional
 import re
+from pathlib import Path
 import config.llm_config as llm_cfg          # 用便宜的 V3，不用 R1
 
 # ─────────────────────────────────────────────
@@ -25,6 +27,18 @@ _SYSTEM_KEYWORDS = ["回测", "全市场扫描", "股票筛选", "扫描全市�
 _TECHNICAL_KW = ["kdj", "macd", "均线", "技术面", "k线", "趋势", "ma20", "布林", "rsi", "成交量"]
 _FUNDAMENTAL_KW = ["净利润", "pe", "pb", "roe", "基本面", "财务", "营收", "市盈率", "市净率"]
 _SENTIMENT_KW = ["新闻", "情绪", "舆情", "情感", "消息", "利好", "利空"]
+
+# 规则优先；fastText 只在高置信度下分流，复杂表达仍交给 LLM 完成槽位抽取。
+_FASTTEXT_MODEL_PATH = Path(__file__).parent.parent / "models" / "intent_classifier.bin"
+_FASTTEXT_THRESHOLD = float(os.getenv("INTENT_FASTTEXT_THRESHOLD", "0.85"))
+_FASTTEXT_LABELS = {
+    "__label__discussion": 1,
+    "__label__analysis": 2,
+    "__label__system": 3,
+    "__label__insufficient": 4,
+}
+_fasttext_model = None
+_fasttext_load_attempted = False
 
 
 # ─────────────────────────────────────────────
@@ -80,10 +94,10 @@ def _load_stock_map():
     if _STOCK_MAP:
         return
     try:
-        import json, os
-        cache_path = os.path.join(os.path.dirname(__file__), "../cache/stock_universe_cache.json")
-        cache_path = os.path.normpath(cache_path)
-        with open(cache_path, "r") as f:
+        import json
+        from config.runtime_paths import STOCK_UNIVERSE_CACHE_FILE
+
+        with open(STOCK_UNIVERSE_CACHE_FILE, "r", encoding="utf-8") as f:
             d = json.load(f)
         for item in d.get("data", []):
             name = item["name"].replace(" ", "").replace("　", "")
@@ -134,6 +148,67 @@ def _detect_focus(query: str) -> Optional[str]:
     if any(kw in q for kw in _SENTIMENT_KW):
         return "sentiment"
     return None
+
+
+def _load_fasttext_model():
+    """懒加载本地模型；模型未训练或加载失败时不影响 LLM 兜底。"""
+    global _fasttext_model, _fasttext_load_attempted
+    if _fasttext_load_attempted:
+        return _fasttext_model
+    _fasttext_load_attempted = True
+    if not _FASTTEXT_MODEL_PATH.exists():
+        print(f"[IntentParser] fastText 模型不存在，使用 LLM 兜底：{_FASTTEXT_MODEL_PATH}")
+        return None
+    try:
+        import fasttext
+        _fasttext_model = fasttext.load_model(str(_FASTTEXT_MODEL_PATH))
+        print(f"[IntentParser] fastText 意图模型已加载：{_FASTTEXT_MODEL_PATH.name}")
+    except Exception as exc:
+        print(f"[IntentParser] fastText 加载失败，使用 LLM 兜底：{exc}")
+    return _fasttext_model
+
+
+def _find_stock_in_query(query: str) -> tuple[Optional[str], Optional[str]]:
+    """只有本地映射能确认股票时，分析意图才允许被 fastText 直接处理。"""
+    clean = query.replace(" ", "").replace("　", "")
+    for name in sorted(_STOCK_MAP, key=len, reverse=True):
+        if len(name) >= 2 and name in clean:
+            return name, _STOCK_MAP[name]
+    return None, None
+
+
+def _fasttext_layer(query: str) -> Optional[dict]:
+    """高置信度意图分流；分析意图缺少股票槽位时回退 LLM。"""
+    model = _load_fasttext_model()
+    if model is None:
+        return None
+    try:
+        labels, probabilities = model.predict(query.replace("\n", " "), k=1)
+        label, confidence = labels[0], float(probabilities[0])
+        intent = _FASTTEXT_LABELS.get(label)
+    except Exception as exc:
+        print(f"[IntentParser] fastText 推理失败，使用 LLM 兜底：{exc}")
+        return None
+    if intent is None or confidence < _FASTTEXT_THRESHOLD:
+        return None
+
+    stock_name = stock_code = None
+    if intent == 2:
+        stock_name, stock_code = _find_stock_in_query(query)
+        if not stock_code:
+            return None
+
+    result = {
+        "intent": intent,
+        "stock_name": stock_name,
+        "stock_code": stock_code,
+        "analyst_focus": _detect_focus(query) or ("all" if intent == 2 else None),
+        "reply_hint": None,
+    }
+    if intent == 4:
+        result["reply_hint"] = "请问您想分析哪只股票？可以输入股票名称或6位代码。"
+    print(f"[IntentParser] fastText 命中 intent={intent}, confidence={confidence:.3f}")
+    return result
 
 
 def _rule_layer(query: str) -> Optional[dict]:
@@ -195,6 +270,11 @@ def parse_intent(query: str) -> dict:
     rule_result = _rule_layer(query)
     if rule_result is not None:
         return rule_result
+
+    # 高置信度常见表达走本地轻量模型；低置信度保留 LLM JSON 兜底。
+    fasttext_result = _fasttext_layer(query)
+    if fasttext_result is not None:
+        return fasttext_result
 
     llm = llm_cfg.quick_llm
 

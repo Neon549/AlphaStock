@@ -19,10 +19,10 @@ import os
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from config.runtime_paths import CACHE_DIR, STOCK_UNIVERSE_CACHE_FILE
 
 # ── 缓存配置 ──────────────────────────────────────────────────────────
-CACHE_DIR = Path("./cache")
-CACHE_FILE = CACHE_DIR / "stock_universe_cache.json"
+CACHE_FILE = STOCK_UNIVERSE_CACHE_FILE
 CACHE_EXPIRE_HOURS = 24  # 缓存24小时
 
 # ── 静态板块池（原有，快速启动用）────────────────────────────────────

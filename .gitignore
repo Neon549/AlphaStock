@@ -1,29 +1,24 @@
-Set-Content .gitignore "venv/
+venv/
 __pycache__/
-reports/
 *.pyc
 .env
+.env.pgvector
+
+# Local model and legacy stores
+models/intent_classifier.bin
 memory/trading_memory.db
 rag/faiss_index/
-*.db
-"
-backtest/data_cache/
-backtest/fundamental_cache/
 chroma_db/
-logs/
-venv/
-checkpoints.db-shm
-checkpoints.db-wal
-requirements_full.txt
-backtest/fundamental_cache/
+*.db
+
+# Generated runtime state
+runtime/
 cache/
 reports/
+tmp/
+logs/
 backtest/data_cache/
-".env" 
-"__pycache__/" 
-"*.pyc" 
-"cache/" 
-".env" 
-"__pycache__/" 
-"*.pyc" 
-"cache/" 
+backtest/fundamental_cache/
+
+# Local-only installation artifacts
+requirements_full.txt

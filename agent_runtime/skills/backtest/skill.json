@@ -1,0 +1,12 @@
+{
+  "name": "backtest",
+  "description": "Rules for strategy selection, parameter interpretation and backtest result explanation.",
+  "version": "1.0.0",
+  "trigger": {"keywords": ["回测", "策略", "收益率", "最大回撤"]},
+  "permissions": ["backtest:run", "market:read"],
+  "prompt_files": [
+    "SKILL.md",
+    "refs/strategy_rules.md",
+    "refs/interpreter_rules.md"
+  ]
+}

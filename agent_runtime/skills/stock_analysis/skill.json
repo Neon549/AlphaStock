@@ -1,0 +1,14 @@
+{
+  "name": "stock-analysis",
+  "description": "Rules and prompt references for technical, fundamental and sentiment stock-analysis agents.",
+  "version": "1.0.0",
+  "trigger": {"keywords": ["技术面", "基本面", "情绪", "KDJ", "MACD"]},
+  "permissions": ["market:read"],
+  "prompt_files": [
+    "SKILL.md",
+    "refs/common_rules.md",
+    "refs/technical_rules.md",
+    "refs/fundamental_rules.md",
+    "refs/sentiment_rules.md"
+  ]
+}

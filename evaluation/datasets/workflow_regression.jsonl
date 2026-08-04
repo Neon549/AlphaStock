@@ -1,0 +1,8 @@
+{"id":"scope-valid-a-share","kind":"scope","input":{"stock_code":"600519","analyst_focus":"all","doc_context_length":0},"expected":{"allowed":true,"side_effects":"read_only"}}
+{"id":"scope-invalid-stock-code","kind":"scope","input":{"stock_code":"60051","analyst_focus":"technical","doc_context_length":0},"expected":{"allowed":false,"violations_include":["six-digit"]}}
+{"id":"scope-invalid-focus","kind":"scope","input":{"stock_code":"600519","analyst_focus":"portfolio","doc_context_length":0},"expected":{"allowed":false,"violations_include":["outside the allowed scope"]}}
+{"id":"scope-oversized-document","kind":"scope","input":{"stock_code":"600519","analyst_focus":"fundamental","doc_context_length":30001},"expected":{"allowed":false,"violations_include":["30,000 character"]}}
+{"id":"gate-missing-draft","kind":"publication_gate","input":{"technical_report":"[ANALYSIS_OK] evidence exists","final_decision":""},"expected":{"publish_status":"blocked","reasons_include":["missing final draft"]}}
+{"id":"gate-no-verified-report","kind":"publication_gate","input":{"technical_report":"[ANALYSIS_ABORT] tool failed","final_decision":"hold"},"expected":{"publish_status":"blocked","reasons_include":["no verified analyst report"]}}
+{"id":"gate-blocks-guaranteed-return","kind":"publication_gate","input":{"technical_report":"[ANALYSIS_OK] evidence exists","final_decision":"This is a guaranteed return."},"expected":{"publish_status":"blocked","reasons_include":["unsupported certainty"]}}
+{"id":"gate-requires-human-review","kind":"publication_gate","input":{"technical_report":"[ANALYSIS_OK] evidence exists","final_decision":"Evidence supports a cautious watchlist decision."},"expected":{"publish_status":"requires_human_review","human_review_required":true}}

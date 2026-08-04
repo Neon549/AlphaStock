@@ -6,21 +6,49 @@
 # 原有接口不变
 # ==================================
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, BackgroundTasks, UploadFile, File, Form, Header
 from pydantic import BaseModel
 from typing import Optional
-from graph.trading_graph import run_trading_analysis
-from memory.long_term import LongTermMemory
+from hashlib import sha256
+import os
+from agent_runtime.memory.long_term import LongTermMemory
+from control_plane.contracts import AgentEvent, TriggerType
+from control_plane.gateway import Gateway
+from control_plane.investment_runtime import InvestmentRuntime
+from control_plane.run_store import PostgresRunStore
+from agent_runtime.memory.manager import PostgresMemoryManager
+from agent_runtime.memory.candidates import create_candidate, get_candidate, list_candidates, review_candidate
+from agent_runtime.memory.reflection import candidate_from_bad_case, candidate_from_backtest_deviation
 from api.multimodal import (
     analyze_image,
+    cleanup_document,
+    index_image_analysis,
     process_document,
-    retrieve_from_document,
     cleanup_session,
 )
-from api.intent_parser import parse_intent  # ← 意图识别
+from api.review_store import create_review, get_review, resolve_review
+from api.auth import verify_token
+from agent_runtime.skills.registry import skill_registry
 
 router = APIRouter()
 memory = LongTermMemory()
+runtime_memory = PostgresMemoryManager()
+investment_gateway = Gateway(InvestmentRuntime(memory_manager=runtime_memory), store=PostgresRunStore())
+
+
+def _event_id_from_request(
+    operation: str, session_id: str | None, actor_id: str | None, idempotency_key: str | None
+) -> str | None:
+    """Namespace a client retry key before it becomes the global event primary key."""
+    if not idempotency_key or not idempotency_key.strip():
+        return None
+    raw = f"{operation}:{actor_id or 'anonymous'}:{session_id or 'no-session'}:{idempotency_key.strip()}"
+    return sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _optional_actor(auth_token: str | None) -> str | None:
+    identity = verify_token(auth_token or "")
+    return identity["username"] if identity.get("valid") else None
 
 
 def _apply_model_config(model: str):
@@ -30,6 +58,10 @@ def _apply_model_config(model: str):
     smart:  DeepSeek-R1（推理强，适合深度分析）默认
     strong: DeepSeek-R1 + 更低temperature（严格，适合量化回测）
     """
+    # Kept as a no-op compatibility shim for existing route call sites.
+    # The name is carried in AgentEvent.metadata and resolved per run.
+    return model if model in {"fast", "smart", "strong"} else "smart"
+
     import config.llm_config as llm_cfg
     from config.llm_config import FallbackLLM, _make_deepseek, _qwen_backup
 
@@ -84,6 +116,7 @@ class AnalyzeRequest(BaseModel):
     force_refresh: bool = False
     model: str = "smart"  # fast / smart / strong
     session_id: Optional[str] = None  # 用于关联上传的文档
+    auth_token: Optional[str] = None  # required to create a publish review
 
 
 class AnalyzeResponse(BaseModel):
@@ -94,6 +127,11 @@ class AnalyzeResponse(BaseModel):
     sentiment_report: str
     researcher_analysis: str
     status: str = "success"
+    publish_status: str = "requires_human_review"
+    review_id: Optional[str] = None
+    publish_reasons: list[str] = []
+    document_citations: list[dict] = []
+    evidence_cards: list[dict] = []
 
 
 class HistoryResponse(BaseModel):
@@ -135,6 +173,75 @@ class ChatRequest(BaseModel):
     message: str
     model: str = "smart"  # fast / smart / strong
     session_id: Optional[str] = None
+    auth_token: Optional[str] = None
+
+
+class ReviewDecisionRequest(BaseModel):
+    approved: bool
+
+
+class UserPreferencesRequest(BaseModel):
+    risk_profile: Optional[str] = None
+    preferred_sectors: Optional[list[str]] = None
+    answer_style: Optional[str] = None
+    watchlist: Optional[list[str]] = None
+
+
+class MemoryCandidateRequest(BaseModel):
+    title: str
+    content: str
+    category: str = "governance"
+    source_run_id: Optional[str] = None
+
+
+class MemoryCandidateDecisionRequest(BaseModel):
+    approved: bool
+    review_note: str = ""
+
+
+class BadCaseCandidateRequest(BaseModel):
+    failure_type: str
+    observed: str
+    expected: str
+    root_cause: str = "pending human review"
+    source_run_id: Optional[str] = None
+
+
+class BacktestDeviationCandidateRequest(BaseModel):
+    expected: dict
+    actual: dict
+    source_run_id: Optional[str] = None
+
+
+class WebhookRequest(BaseModel):
+    content: str
+    session_id: Optional[str] = None
+    actor_id: Optional[str] = None
+    channel: str = "webhook"
+    event_id: Optional[str] = None
+    model: str = "smart"
+    type: str = "generic"
+
+
+def _create_publication_review(result: dict, auth_token: Optional[str]) -> Optional[str]:
+    """Persist a reviewable draft; it is not published or memorised yet."""
+    if result.get("publish_status") != "requires_human_review":
+        return None
+    identity = verify_token(auth_token or "")
+    if not identity["valid"]:
+        result["publish_status"] = "blocked"
+        result["human_review_required"] = True
+        result["publish_reasons"] = ["an authenticated user is required to submit a draft for review"]
+        return None
+    return create_review({
+        "requested_by": identity["username"],
+        "stock_code": result.get("stock_code"),
+        "draft_decision": result.get("draft_decision") or result.get("final_decision"),
+        "fundamental_report": result.get("fundamental_report", ""),
+        "technical_report": result.get("technical_report", ""),
+        "sentiment_report": result.get("sentiment_report", ""),
+        "publish_reasons": result.get("publish_reasons", []),
+    })
 
 
 # ── 原有接口 ────────────────────────────────
@@ -145,11 +252,33 @@ def health_check():
     return {"status": "ok", "message": "Trading Agent System is running"}
 
 
+@router.post("/webhooks/agent")
+def agent_webhook(request: WebhookRequest, x_webhook_signature: str = Header(...)):
+    """Signed external ingress; verification happens before Gateway dispatch."""
+    from control_plane.triggers import webhook_event
+
+    payload = request.model_dump(exclude_none=True) if hasattr(request, "model_dump") else request.dict(exclude_none=True)
+    try:
+        event = webhook_event(payload, x_webhook_signature, os.getenv("AGENT_WEBHOOK_SECRET", ""))
+    except (PermissionError, ValueError) as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    run = investment_gateway.dispatch(event)
+    if run.route == "duplicate":
+        raise HTTPException(status_code=409, detail="duplicate webhook event")
+    return {"run_id": run.run_id, "route": run.route, "status": run.payload.get("status")}
+
+
+@router.get("/skills")
+def list_skills():
+    """Return registry metadata plus an immutable content fingerprint per version."""
+    return {"skills": skill_registry.list_public()}
+
+
 # ── 新增：自然语言对话接口 ──────────────────
 
 
 @router.post("/chat")
-def chat(request: ChatRequest):
+def chat(request: ChatRequest, idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key")):
     """
     自然语言对话入口，含意图识别。
     用户无需输入股票代码，直接说"帮我分析宁德时代"即可。
@@ -164,78 +293,34 @@ def chat(request: ChatRequest):
     if not query:
         raise HTTPException(status_code=400, detail="消息不能为空")
 
-    # ── Step 1: 意图解析 ──────────────────────────
-    parsed = parse_intent(query)
-    intent = parsed["intent"]
-    stock_code = parsed["stock_code"]
-    stock_name = parsed["stock_name"]
-    analyst_focus = parsed["analyst_focus"] or "all"
-    reply_hint = parsed["reply_hint"]
-
-    print(
-        f"[Chat] query={query!r} intent={intent} stock={stock_code} focus={analyst_focus}"
-    )
-
-    # ── Step 2: 路由 ──────────────────────────────
-
-    # 意图4：信息不足，追问用户
-    if intent == 4:
-        return {"role": "assistant", "content": reply_hint, "intent": intent}
-
-    # 意图1：开放性讨论，quick_llm 直接回答，不启动 Agent
-    if intent == 1:
-        import config.llm_config as llm_cfg
-
-        system_prompt = (
-            "你是一个专业的A股投资顾问，精通行业分析、商业模式解读和财报分析。"
-            "请用专业但易懂的语言回答用户的问题，可以发表自己的观点，"
-            "但需注明这是分析视角而非投资建议。"
-        )
-        response = llm_cfg.quick_llm.invoke(f"{system_prompt}\n\n用户：{query}").content
-        return {"role": "assistant", "content": response, "intent": intent}
-
-    # 意图3：系统功能，引导用户使用对应模块
-    if intent == 3:
-        return {
-            "role": "assistant",
-            "content": "请使用左侧功能菜单选择【回测】、【扫描】或【筛选】功能，输入对应参数即可执行。",
-            "intent": intent,
-        }
-
-    # 意图2：操作性分析，走完整 LangGraph 流程
+    # FastAPI only adapts HTTP to an internal event. The Gateway does not call
+    # models or tools; InvestmentRuntime owns the route and execution boundary.
     _apply_model_config(request.model or "smart")
-
-    doc_context = ""
-    if request.session_id:
-        doc_context = retrieve_from_document(
-            request.session_id, f"{stock_code} 财务 分析"
-        )
-        if doc_context:
-            print(f"[Chat] 检索到用户上传文档：{len(doc_context)}字")
-
-    result = run_trading_analysis(
-        stock_code,
-        doc_context=doc_context,
-        analyst_focus=analyst_focus,  # ← 按需启动 Analyst
-    )
-
-    return {
-        "role": "assistant",
-        "intent": intent,
-        "stock_code": stock_code,
-        "stock_name": stock_name,
-        "analyst_focus": analyst_focus,
-        "decision": result.get("final_decision", ""),
-        "fundamental_report": result.get("fundamental_report", ""),
-        "technical_report": result.get("technical_report", ""),
-        "sentiment_report": result.get("sentiment_report", ""),
-        "researcher_analysis": result.get("bull_argument", ""),
-        "status": "success",
+    actor_id = _optional_actor(request.auth_token)
+    event_kwargs = {
+        "trigger": TriggerType.MESSAGE,
+        "content": query,
+        "session_id": request.session_id,
+        "actor_id": actor_id,
+        "channel": "web",
+        "metadata": {"model": request.model or "smart"},
     }
-
+    event_id = _event_id_from_request("chat", request.session_id, actor_id, idempotency_key)
+    if event_id:
+        event_kwargs["event_id"] = event_id
+    run = investment_gateway.dispatch(AgentEvent(**event_kwargs))
+    if run.route == "duplicate":
+        raise HTTPException(status_code=409, detail="duplicate request is already recorded; retry without reusing the key after checking run status")
+    payload = dict(run.payload)
+    workflow_result = payload.pop("workflow_result", None)
+    if workflow_result is not None:
+        payload["review_id"] = _create_publication_review(workflow_result, request.auth_token)
+    payload["run_id"] = run.run_id
+    payload["route"] = run.route
+    return payload
 
 @router.post("/analyze", response_model=AnalyzeResponse)
-def analyze_stock(request: AnalyzeRequest):
+def analyze_stock(request: AnalyzeRequest, idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key")):
     try:
         stock_code = request.stock_code.strip()
         if not stock_code:
@@ -246,25 +331,39 @@ def analyze_stock(request: AnalyzeRequest):
 
         # 根据模型参数动态切换LLM
         _apply_model_config(model)
-
-        # 如果用户上传了文档，把文档内容注入到分析上下文
-        doc_context = ""
-        if request.session_id:
-            doc_context = retrieve_from_document(
-                request.session_id, f"{stock_code} 财务 分析"
-            )
-            if doc_context:
-                print(f"[Analyze] 检索到用户上传文档内容：{len(doc_context)}字")
-
-        result = run_trading_analysis(stock_code, doc_context=doc_context)
-
+        actor_id = _optional_actor(request.auth_token)
+        event_kwargs = {
+            "trigger": TriggerType.HTTP,
+            "content": f"分析 {stock_code}",
+            "session_id": request.session_id,
+            "actor_id": actor_id,
+            "channel": "web",
+            "metadata": {"operation": "analyze", "model": model},
+        }
+        event_id = _event_id_from_request("analyze", request.session_id, actor_id, idempotency_key)
+        if event_id:
+            event_kwargs["event_id"] = event_id
+        run = investment_gateway.dispatch(AgentEvent(**event_kwargs))
+        if run.route == "duplicate":
+            raise HTTPException(status_code=409, detail="duplicate request is already recorded; retry without reusing the key after checking run status")
+        payload = dict(run.payload)
+        workflow_result = payload.pop("workflow_result", None)
+        if workflow_result is None:
+            raise HTTPException(status_code=400, detail=payload.get("content", "无法启动股票分析"))
+        review_id = _create_publication_review(workflow_result, request.auth_token)
         return AnalyzeResponse(
             stock_code=stock_code,
-            decision=result.get("final_decision", ""),
-            fundamental_report=result.get("fundamental_report", ""),
-            technical_report=result.get("technical_report", ""),
-            sentiment_report=result.get("sentiment_report", ""),
-            researcher_analysis=result.get("bull_argument", ""),
+            decision=payload.get("decision", ""),
+            fundamental_report=payload.get("fundamental_report", ""),
+            technical_report=payload.get("technical_report", ""),
+            sentiment_report=payload.get("sentiment_report", ""),
+            researcher_analysis=payload.get("researcher_analysis", ""),
+            status=payload.get("status", "blocked"),
+            publish_status=payload.get("publish_status", "blocked"),
+            publish_reasons=payload.get("publish_reasons", []),
+            review_id=review_id,
+            document_citations=payload.get("document_citations", []),
+            evidence_cards=payload.get("evidence_cards", []),
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"分析失败：{str(e)}")
@@ -274,6 +373,165 @@ def analyze_stock(request: AnalyzeRequest):
 def get_history(stock_code: str):
     history = memory.get_history(stock_code)
     return HistoryResponse(stock_code=stock_code, history=history)
+
+
+def _require_review_user(auth_token: str) -> str:
+    identity = verify_token(auth_token)
+    if not identity["valid"]:
+        raise HTTPException(status_code=401, detail="valid X-Auth-Token is required")
+    return identity["username"]
+
+
+@router.get("/memory/preferences")
+def get_user_preferences(x_auth_token: str = Header(...)):
+    """Return only the authenticated user's explicit preference memory."""
+    actor_id = _require_review_user(x_auth_token)
+    return {"actor_id": actor_id, "preferences": runtime_memory.get_preferences(actor_id)}
+
+
+@router.put("/memory/preferences")
+def put_user_preferences(request: UserPreferencesRequest, x_auth_token: str = Header(...)):
+    """Store explicit preferences; no model-inferred profile is accepted here."""
+    actor_id = _require_review_user(x_auth_token)
+    payload = request.model_dump(exclude_none=True) if hasattr(request, "model_dump") else request.dict(exclude_none=True)
+    preferences = runtime_memory.set_preferences(
+        actor_id,
+        payload,
+    )
+    return {"actor_id": actor_id, "preferences": preferences}
+
+
+@router.get("/memory/candidates")
+def get_memory_candidates(status: str = "pending", x_auth_token: str = Header(...)):
+    """Return the authenticated user's human-review queue, never indexed drafts."""
+    actor_id = _require_review_user(x_auth_token)
+    try:
+        return {"candidates": list_candidates(requested_by=actor_id, status=status)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/memory/candidates")
+def create_memory_candidate(request: MemoryCandidateRequest, x_auth_token: str = Header(...)):
+    """Create a pending candidate. It does not enter Memory Index automatically."""
+    actor_id = _require_review_user(x_auth_token)
+    try:
+        candidate = create_candidate(
+            title=request.title, content=request.content, category=request.category,
+            source_run_id=request.source_run_id, requested_by=actor_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"candidate_id": candidate.candidate_id, "status": "pending"}
+
+
+@router.post("/memory/candidates/bad-case")
+def create_bad_case_candidate(request: BadCaseCandidateRequest, x_auth_token: str = Header(...)):
+    """Online monitoring can submit a failure; it remains pending review."""
+    actor_id = _require_review_user(x_auth_token)
+    try:
+        candidate = candidate_from_bad_case(
+            request.model_dump() if hasattr(request, "model_dump") else request.dict(),
+            requested_by=actor_id, source_run_id=request.source_run_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"candidate_id": candidate.candidate_id, "status": "pending"}
+
+
+@router.post("/memory/candidates/backtest-deviation")
+def create_backtest_deviation_candidate(
+    request: BacktestDeviationCandidateRequest, x_auth_token: str = Header(...)
+):
+    """Measured backtest-vs-expectation deviations become reviewable candidates."""
+    actor_id = _require_review_user(x_auth_token)
+    try:
+        candidate = candidate_from_backtest_deviation(
+            expected=request.expected, actual=request.actual, requested_by=actor_id,
+            source_run_id=request.source_run_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"candidate_id": candidate.candidate_id, "status": "pending"}
+
+
+@router.get("/memory/candidates/{candidate_id}")
+def get_memory_candidate(candidate_id: str, x_auth_token: str = Header(...)):
+    actor_id = _require_review_user(x_auth_token)
+    candidate = get_candidate(candidate_id)
+    if not candidate:
+        raise HTTPException(status_code=404, detail="memory candidate not found")
+    if candidate.get("requested_by") != actor_id:
+        raise HTTPException(status_code=403, detail="candidate belongs to another user")
+    return candidate
+
+
+@router.post("/memory/candidates/{candidate_id}/decision")
+def decide_memory_candidate(
+    candidate_id: str, request: MemoryCandidateDecisionRequest, x_auth_token: str = Header(...)
+):
+    """Approve -> write source Markdown; vectors still require an explicit sync."""
+    reviewer = _require_review_user(x_auth_token)
+    existing = get_candidate(candidate_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="memory candidate not found")
+    if existing.get("requested_by") != reviewer:
+        raise HTTPException(status_code=403, detail="candidate belongs to another user")
+    resolved = review_candidate(
+        candidate_id, approved=request.approved, reviewer=reviewer, review_note=request.review_note,
+    )
+    if not resolved:
+        raise HTTPException(status_code=409, detail="candidate was already resolved")
+    return {
+        "candidate_id": candidate_id,
+        "status": resolved["status"],
+        "approved_path": resolved.get("approved_path"),
+        "index_sync_required": bool(request.approved),
+    }
+
+
+@router.get("/reviews/{review_id}")
+def get_publication_review(review_id: str, x_auth_token: str = Header(...)):
+    """Fetch a pending draft and its evidence for the human reviewer."""
+    review = get_review(review_id)
+    if not review:
+        raise HTTPException(status_code=404, detail="review not found")
+    reviewer = _require_review_user(x_auth_token)
+    if reviewer != review["payload"].get("requested_by"):
+        raise HTTPException(status_code=403, detail="review belongs to another user")
+    return review
+
+
+@router.post("/reviews/{review_id}/decision")
+def decide_publication_review(
+    review_id: str, request: ReviewDecisionRequest, x_auth_token: str = Header(...)
+):
+    """HITL boundary: only an explicit approval publishes and saves a draft."""
+    reviewer = _require_review_user(x_auth_token)
+    existing = get_review(review_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="review not found")
+    if reviewer != existing["payload"].get("requested_by"):
+        raise HTTPException(status_code=403, detail="review belongs to another user")
+    review = resolve_review(review_id, request.approved, reviewer)
+    if not review:
+        raise HTTPException(status_code=409, detail="review is missing or already resolved")
+
+    payload = review["payload"]
+    if request.approved:
+        memory.save_decision(
+            stock_code=payload["stock_code"],
+            decision=payload["draft_decision"],
+            fundamental_summary=payload.get("fundamental_report", "")[:300],
+            technical_summary=payload.get("technical_report", "")[:300],
+            sentiment_summary=payload.get("sentiment_report", "")[:300],
+        )
+    return {
+        "review_id": review_id,
+        "publish_status": review["status"],
+        "reviewer": reviewer,
+        "decision": payload["draft_decision"] if request.approved else None,
+    }
 
 
 @router.get("/stocks/info/{stock_code}")
@@ -292,71 +550,43 @@ def get_stock_info(stock_code: str):
 
 @router.post("/backtest", response_model=BacktestResponse)
 def run_backtest_api(request: BacktestRequest):
-    """
-    独立回测接口 —— 不走完整的 Multi-Agent 分析流程
-    直接执行策略回测，返回绩效指标
-    """
+    """Execute through the shared service used by tool and workflow entrypoints."""
+    from backtest.service import BacktestInputError, execute_backtest
+
     try:
-        import os
-        from backtest.data_loader import get_stock_data_tushare, get_mock_data
-        from backtest.engine import run_backtest, format_result
-
-        stock_code = request.stock_code.strip()
-        print(
-            f"[Backtest] 请求: {stock_code} {request.start_date}-{request.end_date} 策略:{request.strategy}"
-        )
-        if not stock_code:
-            raise HTTPException(status_code=400, detail="股票代码不能为空")
-
-        # 获取数据
-        token = os.getenv("TUSHARE_TOKEN", "")
-        if token:
-            df = get_stock_data_tushare(
-                stock_code, request.start_date, request.end_date, token
-            )
-        else:
-            df = get_mock_data(stock_code, days=500)
-
-        if df.empty or len(df) < 60:
-            raise HTTPException(status_code=400, detail=f"数据不足(仅{len(df)}根K线)")
-
-        # 执行回测
-        result = run_backtest(
-            df=df,
-            strategy_name=request.strategy,
+        execution = execute_backtest(
+            stock_code=request.stock_code,
+            strategy=request.strategy,
+            start_date=request.start_date,
+            end_date=request.end_date,
             initial_cash=request.initial_cash,
         )
+    except BacktestInputError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"backtest failed: {exc}") from exc
 
-        report_text = format_result(result)
-
-        # 存入记忆（复用现有 long_term memory）
-        memory.save_backtest_result(
-            stock_code=stock_code,
-            strategy=request.strategy,
-            result_summary=report_text[:500],
-        )
-        trade_records: Optional[list] = None
-        returns = result["returns_series"]
-        returns_dates = [str(d.date()) for d in returns.index]
-        returns_values = [round(float(v), 6) for v in returns.values]
-        return BacktestResponse(
-            stock_code=stock_code,
-            strategy=request.strategy,
-            total_return=result["total_return"],
-            sharpe=result["sharpe"],
-            max_drawdown=result["max_drawdown"],
-            trade_count=result["trade_count"],
-            win_rate=result["win_rate"],
-            report_text=report_text,
-            returns_data=returns_values,
-            dates_data=returns_dates,
-            trade_records=result.get("trade_records", []),
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"回测失败：{str(e)}")
+    result = execution["result"]
+    memory.save_backtest_result(
+        stock_code=execution["stock_code"],
+        strategy=execution["strategy"],
+        result_summary=execution["report_text"][:500],
+    )
+    returns = result["returns_series"]
+    return BacktestResponse(
+        stock_code=execution["stock_code"],
+        strategy=execution["strategy"],
+        total_return=result["total_return"],
+        sharpe=result["sharpe"],
+        max_drawdown=result["max_drawdown"],
+        trade_count=result["trade_count"],
+        win_rate=result["win_rate"],
+        report_text=execution["report_text"],
+        report_path=result.get("report_path"),
+        returns_data=[round(float(value), 6) for value in returns.values],
+        dates_data=[str(value.date()) for value in returns.index],
+        trade_records=result.get("trade_records", []),
+    )
 
 
 @router.get("/backtest/strategies")
@@ -420,7 +650,7 @@ class ScanRequest(BaseModel):
 @router.post("/scan/today")
 def scan_today_signals(request: ScanRequest):
     try:
-        from graph.scan_graph import run_daily_scan
+        from agent_runtime.compat.langgraph.scan_graph import run_daily_scan
 
         result = run_daily_scan(
             base_start=request.base_start, strategy=request.strategy
@@ -443,7 +673,7 @@ def scan_today_signals(request: ScanRequest):
 async def upload_image(
     file: UploadFile = File(...),
     question: str = Form(default=""),
-    session_id: str = Form(default=""),
+    session_id: str = Form(default="default_session"),
 ):
     """
     上传图片并用多模态LLM分析
@@ -460,11 +690,23 @@ async def upload_image(
     print(f"[Upload] 收到图片：{file.filename}，大小：{len(file_bytes)/1024:.1f}KB")
 
     result = analyze_image(file_bytes, file.content_type, question)
+    index_result = index_image_analysis(
+        image_bytes=file_bytes,
+        filename=file.filename or "uploaded-image",
+        session_id=session_id,
+        vlm_result=result,
+        question=question,
+    )
     return {
         "filename": file.filename,
         "extracted_data": result["extracted_data"],
         "analysis": result["analysis"],
         "data_type": result["data_type"],
+        "session_id": session_id,
+        "document_id": index_result.get("document_id"),
+        "indexed": index_result.get("indexed", False),
+        "chunk_count": index_result.get("chunk_count", 0),
+        "index_error": index_result.get("error"),
         "status": "success",
     }
 
@@ -507,6 +749,7 @@ async def upload_document(
         "preview": result["preview"],
         "file_type": result["file_type"],
         "total_chars": result["total_chars"],
+        "document_id": result["document_id"],
         "session_id": session_id,
         "status": "success",
         "message": f"文档已处理，共{result['chunk_count']}个片段，分析时将自动参考此文档",
@@ -518,6 +761,12 @@ def cleanup_session_route(session_id: str):
     """清理用户session的临时文档"""
     cleanup_session(session_id)
     return {"status": "ok", "message": f"session {session_id[:8]} 已清理"}
+
+
+@router.delete("/upload/session/{session_id}/document/{document_id}")
+def cleanup_document_route(session_id: str, document_id: str):
+    deleted = cleanup_document(session_id, document_id)
+    return {"status": "ok", "deleted_chunks": deleted}
 
 
 # ── Alpha 因子打分接口 ──────────────────────────────────────────────────

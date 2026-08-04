@@ -92,6 +92,10 @@ EVAL_DATASET = [
 # ── 2. 纯向量检索（对照组）──────────────────────────────────────────
 
 
+# NOTE: This legacy function still delegates to the hybrid entrypoint below.
+# Its results must not be treated as a pgvector-only A/B baseline.  Keep the
+# old report for historical reference only; use a frozen-corpus adapter and
+# datasets/RAG_GOLDENSET.md before adding a release metric.
 def vector_only_retrieve(stock_code: str, query: str, top_k: int = 5):
     """只用 pgvector 语义检索，不走 BM25"""
     from rag.retriever import hybrid_retrieve_news

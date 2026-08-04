@@ -1,6 +1,6 @@
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from functools import lru_cache
 import akshare as ak
 import pandas as pd
@@ -56,7 +56,8 @@ def _error(tool_name: str, symbol: str, reason: str) -> str:
 
 
 def _ok(tool_name: str, symbol: str, body: str) -> str:
-    return f"[TOOL_OK]\ntool={tool_name}\nsymbol={symbol}\n{body}"
+    retrieved_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    return f"[TOOL_OK]\ntool={tool_name}\nsymbol={symbol}\nretrieved_at={retrieved_at}\n{body}"
 
 
 def _validate_symbol(symbol: str) -> str | None:
@@ -74,6 +75,70 @@ def _to_yf_symbol(symbol: str) -> str:
 
 def _normalize_symbol(symbol: str) -> str:
     return (symbol or "").strip()
+
+
+# The THS annual abstract is a tabular data source.  Keep the source-to-domain
+# mapping explicit so a layout/order change cannot silently turn an old row
+# into the latest financial evidence.
+_FINANCIAL_FIELD_MAP = {
+    "report_period": ("报告期", "报告期末", "截止日期"),
+    "revenue": ("营业总收入", "营业收入"),
+    "net_profit": ("净利润", "归母净利润"),
+    "roe": ("净资产收益率", "ROE"),
+    "gross_margin": ("销售毛利率", "毛利率"),
+}
+
+
+def _parse_financial_period(value: object) -> date | None:
+    """Normalise an annual/quarterly source period into a period-end date."""
+
+    if value is None or isinstance(value, bool):
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "none", "false"}:
+        return None
+    if re.fullmatch(r"\d{4}", text):
+        return date(int(text), 12, 31)
+    compact = re.sub(r"[^0-9]", "", text)
+    if len(compact) == 8:
+        try:
+            return date(int(compact[:4]), int(compact[4:6]), int(compact[6:8]))
+        except ValueError:
+            return None
+    match = re.search(r"(20\d{2})[^0-9]+(\d{1,2})[^0-9]+(\d{1,2})", text)
+    if not match:
+        return None
+    try:
+        return date(*map(int, match.groups()))
+    except ValueError:
+        return None
+
+
+def _source_value(record: pd.Series, field_name: str) -> tuple[object, str | None]:
+    for column in _FINANCIAL_FIELD_MAP[field_name]:
+        if column in record.index:
+            return record[column], column
+    return "N/A", None
+
+
+def _latest_financial_record(df: pd.DataFrame) -> tuple[pd.Series, str, str, str]:
+    """Return the newest record using the explicit report-period source field."""
+
+    period_column = next((name for name in _FINANCIAL_FIELD_MAP["report_period"] if name in df.columns), None)
+    if not period_column:
+        raise ValueError(f"financial source has no report-period field; columns={list(df.columns)}")
+
+    candidates: list[tuple[date, pd.Series, str]] = []
+    for _, record in df.iterrows():
+        raw_period = record[period_column]
+        period_end = _parse_financial_period(raw_period)
+        if period_end:
+            candidates.append((period_end, record, str(raw_period).strip()))
+    if not candidates:
+        raise ValueError(f"financial source has no parseable values in {period_column}")
+
+    latest_period, latest_record, raw_period = max(candidates, key=lambda item: item[0])
+    return latest_record, period_column, raw_period, latest_period.isoformat()
 
 
 # 常用股票名称本地缓存，避免频繁调用Tushare stock_basic接口
@@ -351,15 +416,24 @@ def get_financial_indicator(symbol: str) -> str:
         if df is None or df.empty:
             return _error("get_financial_indicator", symbol, "财务数据为空")
 
-        latest = df.iloc[0]
+        latest, report_period_field, report_period_raw, report_period = _latest_financial_record(df)
+        revenue, _ = _source_value(latest, "revenue")
+        net_profit, _ = _source_value(latest, "net_profit")
+        roe, _ = _source_value(latest, "roe")
+        gross_margin, _ = _source_value(latest, "gross_margin")
 
         body = (
+            f"report_period={report_period}\n"
+            f"report_period_raw={report_period_raw}\n"
+            f"report_period_source_field={report_period_field}\n"
+            "report_type=annual\n"
+            "data_source=AKShare/THS financial abstract\n"
             f"股票名称：{stock_name}\n"
-            f"报告期：{latest.get('报告期', 'N/A')}\n"
-            f"营业总收入：{latest.get('营业总收入', 'N/A')}\n"
-            f"净利润：{latest.get('净利润', 'N/A')}\n"
-            f"ROE：{latest.get('净资产收益率', 'N/A')}\n"
-            f"毛利率：{latest.get('销售毛利率', 'N/A')}\n"
+            f"报告期：{report_period}\n"
+            f"营业总收入：{revenue}\n"
+            f"净利润：{net_profit}\n"
+            f"ROE：{roe}\n"
+            f"毛利率：{gross_margin}\n"
             f"数据来源：AKShare同花顺财务摘要"
         )
         return _ok("get_financial_indicator", symbol, body)

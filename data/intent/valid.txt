@@ -1,0 +1,12 @@
+__label__discussion 宁德时代的商业模式如何
+__label__discussion 什么是市净率
+__label__discussion 谈谈白酒行业的前景
+__label__analysis 分析平安银行
+__label__analysis 贵州茅台均线趋势怎么样
+__label__analysis 看一下比亚迪财务数据
+__label__system 帮我做 MACD 回测
+__label__system 今天扫描哪些股票
+__label__system 查看所有策略
+__label__insufficient 帮我分析股票
+__label__insufficient 我该买什么
+__label__insufficient 看技术面

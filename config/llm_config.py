@@ -18,12 +18,18 @@ AlphaStock 多模型路由配置
 """
 
 import os
+import sys
 import time
 import uuid
 import requests as _requests
 from pathlib import Path
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
+
+# This module is also imported directly by offline tests and CLI tools.  Keep
+# its startup diagnostics safe on Windows terminals configured for GBK.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 # ── 加载环境变量 ─────────────────────────────────────────────────────
 env_path = Path(__file__).resolve().parent.parent / ".env"
@@ -75,27 +81,32 @@ def _trace(
     latency_ms: float,
     success: bool,
     used_backup: bool = False,
+    usage: dict | None = None,
 ):
     """上报一次 LLM 调用到 LangFuse"""
     lf = _get_langfuse()
     if lf is None:
         return
     try:
+        metadata = {
+            "model": model,
+            "success": success,
+            "used_backup": used_backup,
+            "latency_ms": round(latency_ms, 1),
+        }
+        if usage:
+            metadata["usage"] = usage
+
         trace = lf.trace(
             name=f"alphastock/{name}",
-            metadata={
-                "model": model,
-                "success": success,
-                "used_backup": used_backup,
-                "latency_ms": round(latency_ms, 1),
-            },
+            metadata=metadata,
         )
         trace.generation(
             name=name,
             model=model,
             input=input_text[:2000],  # 防止太长
             output=output_text[:2000],
-            metadata={"latency_ms": round(latency_ms, 1)},
+            metadata={"latency_ms": round(latency_ms, 1), **({"usage": usage} if usage else {})},
         )
         lf.flush()
     except Exception as e:
@@ -140,6 +151,36 @@ def _msg_to_str(messages) -> str:
         return ""
 
 
+def _extract_usage(result) -> dict:
+    """兼容不同 OpenAI/LangChain 版本，提取 token 与 DeepSeek 缓存用量。"""
+    usage_metadata = getattr(result, "usage_metadata", None) or {}
+    response_metadata = getattr(result, "response_metadata", None) or {}
+    token_usage = response_metadata.get("token_usage", {}) or {}
+
+    def pick(*keys):
+        for source in (usage_metadata, token_usage, response_metadata):
+            for key in keys:
+                value = source.get(key) if isinstance(source, dict) else None
+                if value is not None:
+                    return value
+        return None
+
+    input_details = usage_metadata.get("input_token_details", {}) if isinstance(usage_metadata, dict) else {}
+    cache_read = input_details.get("cache_read") if isinstance(input_details, dict) else None
+    cache_hit = pick("prompt_cache_hit_tokens")
+    if cache_hit is None:
+        cache_hit = cache_read
+
+    fields = {
+        "input_tokens": pick("input_tokens", "prompt_tokens"),
+        "output_tokens": pick("output_tokens", "completion_tokens"),
+        "total_tokens": pick("total_tokens"),
+        "prompt_cache_hit_tokens": cache_hit,
+        "prompt_cache_miss_tokens": pick("prompt_cache_miss_tokens"),
+    }
+    return {key: value for key, value in fields.items() if value is not None}
+
+
 class FallbackLLM:
     """
     带自动降级 + LangFuse 追踪的 LLM 包装器
@@ -160,6 +201,12 @@ class FallbackLLM:
         try:
             result = self.primary.invoke(messages, **kwargs)
             latency = (time.time() - t0) * 1000
+            usage = _extract_usage(result)
+            if "prompt_cache_hit_tokens" in usage:
+                print(
+                    f"[{self.name}] Prompt Cache：hit={usage['prompt_cache_hit_tokens']} "
+                    f"miss={usage.get('prompt_cache_miss_tokens', 'unknown')}"
+                )
             _trace(
                 name=self.name,
                 input_text=_msg_to_str(messages),
@@ -167,6 +214,7 @@ class FallbackLLM:
                 model=getattr(self.primary, "model_name", self.name),
                 latency_ms=latency,
                 success=True,
+                usage=usage,
             )
             return result
         except Exception as e:
@@ -175,6 +223,7 @@ class FallbackLLM:
                 used_backup = True
                 result = self.backup.invoke(messages, **kwargs)
                 latency = (time.time() - t0) * 1000
+                usage = _extract_usage(result)
                 _trace(
                     name=self.name,
                     input_text=_msg_to_str(messages),
@@ -183,6 +232,7 @@ class FallbackLLM:
                     latency_ms=latency,
                     success=True,
                     used_backup=True,
+                    usage=usage,
                 )
                 return result
             latency = (time.time() - t0) * 1000
@@ -201,6 +251,12 @@ class FallbackLLM:
         try:
             result = await self.primary.ainvoke(messages, **kwargs)
             latency = (time.time() - t0) * 1000
+            usage = _extract_usage(result)
+            if "prompt_cache_hit_tokens" in usage:
+                print(
+                    f"[{self.name}] Prompt Cache：hit={usage['prompt_cache_hit_tokens']} "
+                    f"miss={usage.get('prompt_cache_miss_tokens', 'unknown')}"
+                )
             _trace(
                 name=self.name,
                 input_text=_msg_to_str(messages),
@@ -208,6 +264,7 @@ class FallbackLLM:
                 model=getattr(self.primary, "model_name", self.name),
                 latency_ms=latency,
                 success=True,
+                usage=usage,
             )
             return result
         except Exception as e:
@@ -215,6 +272,7 @@ class FallbackLLM:
                 print(f"[{self.name}] 主力模型失败，切换备用: {e}")
                 result = await self.backup.ainvoke(messages, **kwargs)
                 latency = (time.time() - t0) * 1000
+                usage = _extract_usage(result)
                 _trace(
                     name=self.name,
                     input_text=_msg_to_str(messages),
@@ -223,6 +281,7 @@ class FallbackLLM:
                     latency_ms=latency,
                     success=True,
                     used_backup=True,
+                    usage=usage,
                 )
                 return result
             raise
@@ -256,7 +315,7 @@ if DASHSCOPE_API_KEY:
 #   - SentimentAnalyst（情绪面分析）
 #   - Validator（格式化验证）
 #   - 所有需要快速响应的节点
-quick_llm = FallbackLLM(
+_default_quick_llm = FallbackLLM(
     primary=_make_deepseek("deepseek-chat", temperature=0.1),
     backup=_qwen_backup,
     name="QuickLLM",
@@ -266,11 +325,33 @@ quick_llm = FallbackLLM(
 #   - FundamentalAnalyst（基本面需要理解财务逻辑）
 #   - Validator多空裁判（需要综合复杂信息）
 #   - BacktestInterpreter（量化策略解读）
-deep_llm = FallbackLLM(
+_default_deep_llm = FallbackLLM(
     primary=_make_deepseek("deepseek-reasoner", temperature=0.1),
     backup=_make_deepseek("deepseek-chat", temperature=0.1),  # R1挂了降级V3
     name="DeepLLM",
 )
+
+
+class _ProfileRoutedLLM:
+    """Compatibility proxy: select a ContextVar-bound client per run."""
+
+    def __init__(self, kind, fallback):
+        self.kind = kind
+        self.fallback = fallback
+
+    def _target(self):
+        from control_plane.model_profile import active_model
+        return active_model(self.kind) or self.fallback
+
+    def invoke(self, messages, **kwargs):
+        return self._target().invoke(messages, **kwargs)
+
+    async def ainvoke(self, messages, **kwargs):
+        return await self._target().ainvoke(messages, **kwargs)
+
+
+quick_llm = _ProfileRoutedLLM("quick", _default_quick_llm)
+deep_llm = _ProfileRoutedLLM("deep", _default_deep_llm)
 
 # ── 模型路由表（给Agent查询用）────────────────────────────────────────
 
@@ -301,8 +382,22 @@ class TechLensClient:
     优先使用本地模型，不可用时自动降级到 DeepSeek
     """
 
-    def __init__(self, base_url: str = "http://localhost:8088"):
-        self.base_url = base_url
+    def __init__(
+        self,
+        base_url: str | None = None,
+        *,
+        health_timeout_seconds: float | None = None,
+        request_timeout_seconds: float | None = None,
+    ):
+        # The service may run beside the API in development or on a separate
+        # GPU host in production; neither address belongs in source code.
+        self.base_url = (base_url or os.getenv("TECHLENS_BASE_URL", "http://127.0.0.1:8088")).rstrip("/")
+        self.health_timeout_seconds = health_timeout_seconds or float(
+            os.getenv("TECHLENS_HEALTH_TIMEOUT_SECONDS", "3")
+        )
+        self.request_timeout_seconds = request_timeout_seconds or float(
+            os.getenv("TECHLENS_REQUEST_TIMEOUT_SECONDS", "60")
+        )
 
     def analyze(
         self,
@@ -319,14 +414,14 @@ class TechLensClient:
                 "price_result": price_result,
                 "kdj_result": kdj_result,
             },
-            timeout=60,
+            timeout=self.request_timeout_seconds,
         )
         resp.raise_for_status()
         return resp.json()
 
     def is_available(self) -> bool:
         try:
-            r = _requests.get(f"{self.base_url}/health", timeout=3)
+            r = _requests.get(f"{self.base_url}/health", timeout=self.health_timeout_seconds)
             return r.status_code == 200
         except Exception:
             return False

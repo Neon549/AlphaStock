@@ -26,7 +26,7 @@ User Request
    ├── Intent Recognition  (4-class: discussion / analysis / system / insufficient)
    │     └── Slot Extraction  →  stock_code, analyst_focus, reply_hint
    │
-   ├── Stock Analysis  (LangGraph StateGraph)
+   ├── Stock Analysis  (Python state machine; LangGraph compatibility adapter)
    │     ├── FundamentalAnalyst    PE / PB / ROE / revenue growth
    │     ├── TechnicalAnalyst      K-line / trend / volume  ← TechLens-1.5B local model
    │     └── SentimentAnalyst      RAG news retrieval + sentiment scoring
@@ -34,7 +34,7 @@ User Request
    │           researcher_node     bull/bear debate
    │           trader_node         final decision + long-term memory write
    │
-   └── Quantitative Backtest  (independent subgraph)
+   └── Quantitative Backtest  (Python fixed runtime; LangGraph compatibility adapter)
          backtest_node         AKShare data + backtrader engine
          interpreter_node      RAG strategy knowledge + LLM interpretation
          optimizer_node        grid search over 36 parameter combinations
@@ -42,11 +42,29 @@ User Request
 
 ---
 
+### Source layout (current)
+
+```text
+control_plane/  event routing, run lifecycle and per-run model profile
+agent_runtime/  agents, context, memory, skills, workflows and compatibility adapters
+agent_runtime/compat/langgraph/  opt-in LangGraph adapter for comparison and rollback
+api/            FastAPI delivery endpoints
+backtest/       quantitative domain services
+rag/, tools/    retrieval and external data integrations
+evaluation/     offline evaluation runners and datasets
+tests/          unit, workflow, integration and evaluation tests
+runtime/        ignored local state: reports, caches and checkpoints
+```
+
+`agent_runtime.workflows.PythonInvestmentRuntime` is the default runtime.
+`LangGraphInvestmentRuntime` remains an adapter for compatibility and
+cross-runtime regression comparison; it is not the architectural centre.
+
 ## Tech Stack
 
 | Layer | Technology |
 |---|---|
-| Agent Orchestration | LangGraph StateGraph |
+| Agent Orchestration | Python state machine (default) + LangGraph compatibility runtime |
 | LLM | DeepSeek V3 (primary) / Qwen (auto-fallback) |
 | Technical Analysis Model | TechLens-1.5B (Qwen3 fine-tuned, local inference) |
 | RAG Retrieval | BM25 + pgvector + RRF hybrid search |
@@ -83,7 +101,12 @@ Ablation results across four retrieval strategies (Recall@10):
 | **Hybrid + RRF** | **0.8707** ✅ |
 
 ### Structured Query Understanding
-Instead of a fragile query rewriter, user input goes through Intent Recognition (4-class LLM classifier) → Slot Extraction (`stock_code`, `analyst_focus`, `reply_hint`). The `analysts_node` reads `analyst_focus` and skips irrelevant analysts (returning `[SKIPPED]`), eliminating a second layer of LLM uncertainty.
+
+Intent routing uses three layers: deterministic rules first, then a high-confidence local fastText four-class classifier (`discussion` / `analysis` / `system` / `insufficient`), and finally the LLM JSON parser for low-confidence or unfamiliar inputs. For an analysis intent, fastText only returns directly when the stock name can be resolved by the local mapping; otherwise the request falls back to the LLM so stock and analyst-focus slots are not lost. The `analysts_node` reads `analyst_focus` and skips irrelevant analysts (returning `[SKIPPED]`).
+
+### Skill Registry
+
+Each skill is registered by `agent_runtime/skills/<skill>/skill.json` with a name, description, trigger, required permissions, semantic version and prompt files. The registry creates a content hash from the manifest and prompt references, so any rule change produces a new traceable `version_id`. `/chat` and `/analyze` permission-filter candidates before asking the LLM to choose from their descriptions; invalid LLM output falls back to deterministic triggers. `document-rag` is a read-only skill (`document:read`) with an isolated handler that retrieves pgvector evidence and page citations. Inspect active metadata through `GET /api/v1/skills`.
 
 ### Graceful Degradation
 - DeepSeek failure → auto-switch to Qwen
@@ -116,6 +139,9 @@ Online monitoring via LangFuse full-chain tracing. Alerting threshold: Faithfuln
 git clone https://github.com/Neon549/Alpha_stock
 cd Alpha_stock
 pip install -r requirements.txt
+
+# 训练本地四分类意图模型；生成 models/intent_classifier.bin
+python scripts/train_intent_classifier.py
 ```
 
 Configure `.env`:
