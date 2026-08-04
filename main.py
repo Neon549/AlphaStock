@@ -33,6 +33,7 @@ app.add_middleware(
 _business_router_state = {
     "state": "initializing",
     "error_type": None,
+    "error_detail": None,
     "news_index_state": "pending",
 }
 
@@ -54,6 +55,7 @@ def api_health():
         "status": "ok",
         "business_router": _business_router_state["state"],
         "business_router_error_type": _business_router_state["error_type"],
+        "business_router_error_detail": _business_router_state["error_detail"],
         "news_index": _business_router_state["news_index_state"],
     }
 
@@ -88,6 +90,12 @@ async def startup_event():
         except Exception as e:
             _business_router_state["state"] = "failed"
             _business_router_state["error_type"] = type(e).__name__
+            # Keep public diagnostics bounded to import errors only.  These
+            # identify a missing package/symbol without exposing config or a
+            # traceback from the server process.
+            _business_router_state["error_detail"] = (
+                str(e)[:240] if isinstance(e, ImportError) else None
+            )
             print(f"[Startup] 业务路由加载失败: {e}")
             import traceback
             traceback.print_exc()
