@@ -8,7 +8,15 @@ without making those delivery details part of the investment workflow.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import StrEnum
+try:
+    from enum import StrEnum
+except ImportError:  # Python 3.10 compatibility for the production server.
+    from enum import Enum
+
+    class StrEnum(str, Enum):
+        """Compatibility fallback for Python versions before 3.11."""
+
+        pass
 from typing import Any
 from uuid import uuid4
 
