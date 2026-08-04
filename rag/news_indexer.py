@@ -15,10 +15,10 @@ rag/news_indexer.py  ──  新闻向量库（pgvector 版）
 import hashlib
 import threading
 import time
+from typing import Any
 from datetime import datetime, timedelta
 
 import schedule
-from sentence_transformers import SentenceTransformer
 
 from db import get_conn
 
@@ -51,15 +51,23 @@ WATCH_LIST = [
 
 # ── Embedding 模型单例 ────────────────────────────────────────────────
 
-_embed_model: SentenceTransformer | None = None
+_embed_model: Any | None = None
 _embed_lock = threading.Lock()
 
 
-def _get_embed_model() -> SentenceTransformer:
+def _get_embed_model() -> Any:
+    """Load the embedding dependency only when an embedding is actually needed.
+
+    Importing this module is part of document metadata tests and API startup.  The
+    model package is a runtime capability, not a requirement for simply importing
+    the RAG interfaces.
+    """
     global _embed_model
     if _embed_model is None:
         with _embed_lock:
             if _embed_model is None:
+                from sentence_transformers import SentenceTransformer
+
                 print("[NewsIndexer] 加载 Embedding 模型...")
                 _embed_model = SentenceTransformer(EMBED_MODEL)
                 print("[NewsIndexer] Embedding 模型加载完成")
