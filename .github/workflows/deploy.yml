@@ -19,6 +19,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       - name: Run offline governance regression suite
+        env:
+          # Tests import the model-routing module but do not make provider calls.
+          # Keep CI deterministic without exposing production API credentials.
+          DEEPSEEK_API_KEY: ci-test-placeholder
+          DASHSCOPE_API_KEY: ci-test-placeholder
         run: python -m unittest discover -s tests -t . -p "test_*.py"
 
   deploy:
