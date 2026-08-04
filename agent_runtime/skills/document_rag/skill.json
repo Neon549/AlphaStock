@@ -7,7 +7,7 @@
     "keywords": []
   },
   "permissions": ["document:read"],
-  "entrypoint": "skills.document_rag.handler:run",
+  "entrypoint": "agent_runtime.skills.document_rag.handler:run",
   "prompt_files": ["SKILL.md"],
   "version_files": ["SKILL.md", "handler.py"]
 }

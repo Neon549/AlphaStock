@@ -1,4 +1,5 @@
 import unittest
+from importlib import import_module
 
 from agent_runtime.agents.skill_loader import get_skill_version, load_analyst_skill
 from agent_runtime.skills.registry import skill_registry
@@ -35,6 +36,12 @@ class SkillRegistryTests(unittest.TestCase):
     def test_analysis_loader_is_registry_backed(self):
         self.assertIn("kdj", load_analyst_skill("technical").lower())
         self.assertTrue(get_skill_version("stock_analysis").startswith("stock-analysis@1.0.0+"))
+
+    def test_document_rag_entrypoint_resolves_after_runtime_reorganisation(self):
+        skill = skill_registry.get("document-rag")
+        module_name, function_name = skill.entrypoint.split(":", 1)
+        module = import_module(module_name)
+        self.assertTrue(callable(getattr(module, function_name)))
 
 
 if __name__ == "__main__":
