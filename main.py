@@ -26,6 +26,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# The business router is imported after the HTTP server has started so a slow
+# RAG/LLM dependency cannot block the basic health endpoint.  Keep its state
+# observable: the previous broad exception handler made a failed import look
+# exactly like a normal 404 to the web client.
+_business_router_state = {
+    "state": "initializing",
+    "error_type": None,
+    "news_index_state": "pending",
+}
+
 
 @app.get("/")
 def root():
@@ -35,6 +45,17 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/v1/health")
+def api_health():
+    """Health contract used by the reverse proxy and frontend diagnostics."""
+    return {
+        "status": "ok",
+        "business_router": _business_router_state["state"],
+        "business_router_error_type": _business_router_state["error_type"],
+        "news_index": _business_router_state["news_index_state"],
+    }
 
 
 @app.on_event("startup")
@@ -62,14 +83,25 @@ async def startup_event():
             # 延迟加载业务路由（包含 langchain/langgraph 等重依赖）
             from api.routes import router
             app.include_router(router, prefix="/api/v1")
+            _business_router_state["state"] = "ready"
             print("[Startup] 业务路由加载完成 ✅")
+        except Exception as e:
+            _business_router_state["state"] = "failed"
+            _business_router_state["error_type"] = type(e).__name__
+            print(f"[Startup] 业务路由加载失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return
 
+        try:
             # 新闻系统
             from rag.news_indexer import start_news_system
             start_news_system(bulk_first=True, stream_interval=5, cleanup_hour=2)
+            _business_router_state["news_index_state"] = "ready"
             print("[Startup] 新闻系统启动完成 ✅")
         except Exception as e:
-            print(f"[Startup] 后台初始化失败: {e}")
+            _business_router_state["news_index_state"] = "failed"
+            print(f"[Startup] 新闻系统启动失败（业务路由继续可用）: {e}")
             import traceback
             traceback.print_exc()
 
