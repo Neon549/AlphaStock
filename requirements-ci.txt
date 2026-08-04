@@ -21,4 +21,5 @@ langgraph-checkpoint-sqlite
 langfuse
 psycopg2-binary
 httpx
+python-multipart
 tushare

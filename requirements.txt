@@ -25,6 +25,7 @@ langgraph-checkpoint-sqlite
 langfuse
 psycopg2-binary
 httpx
+python-multipart
 mineru[pipeline]==3.4.4
 sentence-transformers
 langchain-text-splitters
