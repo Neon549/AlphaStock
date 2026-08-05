@@ -164,6 +164,11 @@ def search_memory(query: str, *, top_k: int = 3) -> list[dict[str, Any]]:
     if not query.strip():
         return []
     from db import get_conn
+    requested = max(1, min(top_k, 8))
+    # A Markdown lesson can create several adjacent chunks. Fetch extra vector
+    # candidates, then return at most one strongest chunk per source file so a
+    # small context budget is not monopolised by one document.
+    candidate_limit = min(requested * 4, 32)
     embedding = _embed_local([query])[0]
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -175,18 +180,31 @@ def search_memory(query: str, *, top_k: int = 3) -> list[dict[str, Any]]:
                 ORDER BY embedding <=> %s::vector
                 LIMIT %s
                 """,
-                (str(embedding), str(embedding), max(1, min(top_k, 8))),
+                (str(embedding), str(embedding), candidate_limit),
             )
             rows = cur.fetchall()
-    return [
-        {
-            "evidence_id": f"memory:{source_path}:{source_hash[:12]}:{chunk_index}",
-            "source_path": source_path,
-            "source_hash": source_hash,
-            "chunk_index": chunk_index,
-            "content": content,
-            "metadata": metadata or {},
-            "distance": float(distance),
-        }
-        for source_path, source_hash, chunk_index, content, metadata, distance in rows
-    ]
+    return _unique_source_results(rows, requested)
+
+
+def _unique_source_results(rows: list[tuple], limit: int) -> list[dict[str, Any]]:
+    """Keep the nearest chunk per Markdown source, preserving vector order."""
+    results: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+    for source_path, source_hash, chunk_index, content, metadata, distance in rows:
+        if source_path in seen_paths:
+            continue
+        seen_paths.add(source_path)
+        results.append(
+            {
+                "evidence_id": f"memory:{source_path}:{source_hash[:12]}:{chunk_index}",
+                "source_path": source_path,
+                "source_hash": source_hash,
+                "chunk_index": chunk_index,
+                "content": content,
+                "metadata": metadata or {},
+                "distance": float(distance),
+            }
+        )
+        if len(results) >= limit:
+            break
+    return results

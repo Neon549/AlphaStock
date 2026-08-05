@@ -2,7 +2,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agent_runtime.memory.index import MEMORY_KNOWLEDGE_DIR, _chunks, _file_chunks, approved_memory_files
+from agent_runtime.memory.index import (
+    MEMORY_KNOWLEDGE_DIR,
+    _chunks,
+    _file_chunks,
+    _unique_source_results,
+    approved_memory_files,
+)
 
 
 class MemoryIndexTests(unittest.TestCase):
@@ -36,6 +42,17 @@ class MemoryIndexTests(unittest.TestCase):
             scopes,
             {"governance", "research", "retrieval", "workflow", "operations", "backtest", "evaluation"},
         )
+
+    def test_search_result_keeps_one_nearest_chunk_per_source(self):
+        rows = [
+            ("a.md", "a" * 64, 0, "first", {}, 0.01),
+            ("a.md", "a" * 64, 1, "duplicate", {}, 0.02),
+            ("b.md", "b" * 64, 0, "second", {}, 0.03),
+        ]
+
+        results = _unique_source_results(rows, limit=3)
+        self.assertEqual([item["source_path"] for item in results], ["a.md", "b.md"])
+        self.assertEqual(results[0]["chunk_index"], 0)
 
 
 if __name__ == "__main__":
