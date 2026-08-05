@@ -34,10 +34,12 @@ def evaluate_retrieval_cases(
     for case in cases:
         expected = case["expected"]
         relevant = set(expected["relevant_evidence_ids"])
+        abstain_allowed = bool(expected.get("abstain_allowed", False))
         required_citations = {_citation_key(item) for item in expected.get("required_citations", [])}
         results = retriever(case["query"], top_k=k)
         ids = [item.get("evidence_id") for item in results]
         rank = next((index + 1 for index, value in enumerate(ids) if value in relevant), None)
+        abstain_retrieval_ok = not ids if not relevant and abstain_allowed else None
         gains = [1 if value in relevant else 0 for value in ids]
         dcg = sum(gain / math.log2(index + 2) for index, gain in enumerate(gains))
         ideal = sum(1 / math.log2(index + 2) for index in range(min(len(relevant), k)))
@@ -45,18 +47,21 @@ def evaluate_retrieval_cases(
         citation_hit = bool(required_citations & retrieved_citations) if required_citations else rank is not None
         details.append({
             "id": case["id"], "corpus_version": case["corpus_version"], "rank": rank,
-            "hit": rank is not None, "ndcg": dcg / ideal if ideal else 0.0,
+            "hit": rank is not None, "abstain_retrieval_ok": abstain_retrieval_ok, "ndcg": dcg / ideal if ideal else 0.0,
             "citation_hit": citation_hit, "result_ids": ids,
         })
 
-    total = len(details)
+    answerable = [item for item in details if item["abstain_retrieval_ok"] is None]
+    abstention_cases = [item for item in details if item["abstain_retrieval_ok"] is not None]
+    total = len(answerable)
     return {
-        "cases": total,
+        "cases": len(details),
         f"recall_at_{k}": round(sum(item["hit"] for item in details) / total, 4) if total else 0.0,
-        "mrr": round(sum(1 / item["rank"] for item in details if item["rank"]) / total, 4) if total else 0.0,
-        f"ndcg_at_{k}": round(sum(item["ndcg"] for item in details) / total, 4) if total else 0.0,
-        "citation_hit_rate": round(sum(item["citation_hit"] for item in details) / total, 4) if total else 0.0,
-        "misses": [item["id"] for item in details if not item["hit"]],
+        "mrr": round(sum(1 / item["rank"] for item in answerable if item["rank"]) / total, 4) if total else 0.0,
+        f"ndcg_at_{k}": round(sum(item["ndcg"] for item in answerable) / total, 4) if total else 0.0,
+        "citation_hit_rate": round(sum(item["citation_hit"] for item in answerable) / total, 4) if total else 0.0,
+        "abstain_retrieval_compliance_rate": round(sum(bool(item["abstain_retrieval_ok"]) for item in abstention_cases) / len(abstention_cases), 4) if abstention_cases else None,
+        "misses": [item["id"] for item in answerable if not item["hit"]],
         "details": details,
     }
 

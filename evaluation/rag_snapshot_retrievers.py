@@ -40,7 +40,7 @@ def build_bm25_retriever(corpus: list[dict[str, Any]]) -> Callable[..., list[dic
                 idf = math.log(1 + (len(corpus) - document_frequency.get(term, 0) + 0.5) / (document_frequency.get(term, 0) + 0.5))
                 score += idf * frequency * 2.5 / (frequency + 1.5 * (0.25 + 0.75 * len(document) / max(average_length, 1)))
             scores.append((score, index))
-        return _ranked(corpus, scores, top_k)
+        return _ranked(corpus, scores, top_k, minimum_score=0.0)
 
     return retrieve
 
@@ -84,8 +84,19 @@ def _tokens(text: str) -> list[str]:
     return _TOKEN.findall(text.lower())
 
 
-def _ranked(corpus: list[dict[str, Any]], scores: list[tuple[float, int]], top_k: int) -> list[dict[str, Any]]:
-    return [{**corpus[index], "score": score} for score, index in sorted(scores, key=lambda item: (-item[0], corpus[item[1]]["evidence_id"]))[:top_k]]
+def _ranked(
+    corpus: list[dict[str, Any]],
+    scores: list[tuple[float, int]],
+    top_k: int,
+    *,
+    minimum_score: float | None = None,
+) -> list[dict[str, Any]]:
+    ranked = sorted(scores, key=lambda item: (-item[0], corpus[item[1]]["evidence_id"]))
+    if minimum_score is not None:
+        # BM25 zero means no lexical evidence. Returning it would turn an
+        # honest abstention case into a fabricated document answer.
+        ranked = [item for item in ranked if item[0] > minimum_score]
+    return [{**corpus[index], "score": score} for score, index in ranked[:top_k]]
 
 
 def _cosine(left: list[float], right: list[float]) -> float:

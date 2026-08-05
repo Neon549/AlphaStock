@@ -44,3 +44,11 @@ class RagGoldenEvalTests(unittest.TestCase):
         self.assertEqual(bm25("cash flow", top_k=1)[0]["evidence_id"], "cash")
         self.assertEqual(dense("cash flow", top_k=1)[0]["evidence_id"], "cash")
         self.assertEqual(hybrid("cash flow", top_k=1)[0]["page"], 32)
+
+    def test_retrieval_tracks_no_evidence_abstention_separately(self):
+        cases = [{
+            "id": "none", "corpus_version": "v1", "query": "dividend",
+            "expected": {"relevant_evidence_ids": [], "required_citations": [], "abstain_allowed": True},
+        }]
+        result = evaluate_retrieval_cases(cases, lambda _query, *, top_k: [], k=3)
+        self.assertEqual(result["abstain_retrieval_compliance_rate"], 1.0)
