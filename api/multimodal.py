@@ -67,7 +67,7 @@ _EVIDENCE_PAGE_PATTERN = re.compile(r"第\s*(\d+)\s*页")
 
 
 def cleanup_session(session_id: str):
-    """清理指定 session 的临时文档，不保留 ChromaDB 副本。"""
+    """清理指定 session 的临时文档，不保留本地向量库副本。"""
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:

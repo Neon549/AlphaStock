@@ -8,7 +8,6 @@ __pycache__/
 models/intent_classifier.bin
 memory/trading_memory.db
 rag/faiss_index/
-chroma_db/
 *.db
 
 # Generated runtime state

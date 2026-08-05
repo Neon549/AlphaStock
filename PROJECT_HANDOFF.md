@@ -6,7 +6,7 @@
 
 这是面向个人投资者的 A 股投研辅助系统，而不是自动交易系统。输入股票代码或名称后，系统完成技术面、基本面、情绪面分析，补充文档/记忆/市场证据，生成带证据与风险提示的研究草案；所有投资结论必须经过 Human-in-the-loop 审核，不能自动发布或承诺收益。
 
-技术主线：Python、FastAPI、React 前端、PostgreSQL + pgvector、AKShare、LangChain、DeepSeek/Qwen fallback、MinerU + PyMuPDF/pdfplumber/OCR 文档回退、BM25 + 向量 + RRF、Docker。当前不使用 Streamlit，也不再使用 ChromaDB 作为上传文档/策略知识的主向量存储；但 `chroma_db/` 仍不可删，因为 `rag/strategy_indexer.py` 仍有旧策略库依赖。
+技术主线：Python、FastAPI、React 前端、PostgreSQL + pgvector、AKShare、LangChain、DeepSeek/Qwen fallback、MinerU + PyMuPDF/pdfplumber/OCR 文档回退、BM25 + 向量 + RRF、Docker。上传文档、策略知识与新闻检索统一使用 PostgreSQL + pgvector；ChromaDB 已完成退役。
 
 ## 2. 当前架构（已经完成）
 
@@ -100,7 +100,7 @@ rag/ tools/ backtest/ db.py config/
 - 本地生成物移到 `runtime/cache`、`runtime/reports`、`runtime/tmp`、`runtime/checkpoints.db`，并在 `.gitignore` 忽略。
 - Agent 代码已移动到 `agent_runtime/`；根目录 `graph/` 已消失。
 - 历史重复 backtest snapshot 与迁移脚本被移到外部可恢复备份：`C:\Users\yulin\Documents\空闲栏目\AlphaStock-cleanup-backup-20260803-1800`。
-- 不要删除 `chroma_db/`，也不要把 `.env`、`models/`、本地数据库当作无用文件删除。
+- Chroma 已退役；不要把 `.env`、`models/`、本地数据库当作无用文件删除。
 
 ## 8. 验证命令与当前结果
 

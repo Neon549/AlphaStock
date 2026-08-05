@@ -12,7 +12,6 @@ openai
 requests
 plotly
 faiss-cpu
-chromadb
 fasttext-wheel==0.9.2
 schedule
 jieba
