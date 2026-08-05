@@ -234,9 +234,9 @@ def run_investment_agent_loop(
 ) -> dict[str, Any]:
     """Run a bounded, auditable Skill loop and then apply deterministic governance."""
     if planner_llm is None or final_llm is None:
-        from config.llm_config import deep_llm, quick_llm
+        from config.llm_config import deep_llm, planner_llm as default_planner_llm
 
-        planner_llm = planner_llm or quick_llm
+        planner_llm = planner_llm or default_planner_llm
         final_llm = final_llm or deep_llm
 
     from agent_runtime.workflows.investment_handlers import policy_guard_node

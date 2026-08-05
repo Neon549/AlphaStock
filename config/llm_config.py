@@ -332,6 +332,17 @@ _default_deep_llm = FallbackLLM(
 )
 
 
+_default_planner_llm = FallbackLLM(
+    primary=_qwen_backup or _make_deepseek("deepseek-reasoner", temperature=0.0),
+    backup=(
+        _make_deepseek("deepseek-reasoner", temperature=0.0)
+        if _qwen_backup
+        else _make_deepseek("deepseek-chat", temperature=0.0)
+    ),
+    name="PlannerLLM",
+)
+
+
 class _ProfileRoutedLLM:
     """Compatibility proxy: select a ContextVar-bound client per run."""
 
@@ -352,6 +363,7 @@ class _ProfileRoutedLLM:
 
 quick_llm = _ProfileRoutedLLM("quick", _default_quick_llm)
 deep_llm = _ProfileRoutedLLM("deep", _default_deep_llm)
+planner_llm = _ProfileRoutedLLM("planner", _default_planner_llm)
 
 # ── 模型路由表（给Agent查询用）────────────────────────────────────────
 
