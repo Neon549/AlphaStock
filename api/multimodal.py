@@ -31,36 +31,33 @@ import os
 import shutil
 import subprocess
 import tempfile
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 import re
 
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from db import get_conn
 from rag.news_indexer import _embed
 from api.multimodal_vision import analyze_image
+from api.document_processing.chunking import (
+    CHILD_CHUNK_OVERLAP,
+    CHILD_CHUNK_SIZE,
+    build_hierarchical_chunks,
+    parse_heading,
+)
+from api.document_processing.parsers import parse_document_pages
 
 
 # ── 临时文档向量库（PostgreSQL + pgvector）────────────────────────────────
 
 COLLECTION_TTL_HOURS = 2  # 2小时后自动清理
-CHILD_CHUNK_SIZE = 400
-CHILD_CHUNK_OVERLAP = 60
+
+# ``process_document`` 已使用 document_processing.parsers；以下私有入口暂留，
+# 只为可能存在的旧内部脚本提供过渡兼容，下一轮会随调用方审计一起移除。
 MINERU_TIMEOUT_SECONDS = int(os.getenv("MINERU_TIMEOUT_SECONDS", "300"))
 MINERU_BACKEND = os.getenv("MINERU_BACKEND", "pipeline")
-# 国内本地开发默认使用 ModelScope；部署环境仍可通过环境变量切回 Hugging Face。
 MINERU_MODEL_SOURCE = os.getenv("MINERU_MODEL_SOURCE", "modelscope")
 
-# Markdown 标题、常见中文报告标题和数字标题。解析器不需要猜测标题含义，
-# 只保留原文已经表达出的结构，供检索和引用使用。
-_HEADING_PATTERNS = (
-    re.compile(r"^(#{1,6})\s+(.+?)\s*$"),
-    re.compile(r"^(第[一二三四五六七八九十百零〇0-9]+[章节篇部分])\s*(.*)$"),
-    re.compile(r"^([一二三四五六七八九十]+)[、.．]\s*(.+)$"),
-    re.compile(r"^(\d+(?:\.\d+){0,4})[、.．]?\s+(.+)$"),
-)
 _EVIDENCE_ID_PATTERN = re.compile(r"evidence_id=([^|\]]+)")
 _EVIDENCE_FIELD_PATTERN = re.compile(r"(文件|章节|版本)=([^|\]]+)")
 _EVIDENCE_PAGE_PATTERN = re.compile(r"第\s*(\d+)\s*页")
@@ -217,26 +214,9 @@ def process_document(
         }
     """
     ext = Path(filename).suffix.lower()
-
     # 解析文档内容。PDF 保留页码；其它格式没有可靠页码时以 0 表示。
     try:
-        if ext == ".pdf":
-            pages = _parse_pdf_with_mineru(file_bytes, filename)
-            parser = "mineru"
-            if not pages:
-                pages = _parse_pdf_pages(file_bytes)
-                parser = "pymupdf/pdfplumber-ocr-fallback"
-        elif ext in [".docx", ".doc"]:
-            pages = [(0, _parse_docx(file_bytes))]
-            parser = "python-docx"
-        elif ext in [".txt", ".md"]:
-            pages = [(0, file_bytes.decode("utf-8", errors="ignore"))]
-            parser = "plain-text"
-        elif ext in [".csv"]:
-            pages = [(0, _parse_csv(file_bytes))]
-            parser = "pandas/csv"
-        else:
-            return {"success": False, "error": f"不支持的文件格式：{ext}"}
+        pages, parser = parse_document_pages(file_bytes, filename)
     except Exception as e:
         return {"success": False, "error": f"文档解析失败：{e}"}
 
@@ -433,80 +413,8 @@ def _append_evidence(
     )
 
 
-def _build_hierarchical_chunks(pages: list[tuple[int, str]]) -> list[dict]:
-    """把页级文本转换为带标题路径的可检索子块。
-
-    子块是向量库的检索单元；标题路径是轻量父节点。该设计无需额外图数据库，
-    也不依赖 HNSW 的内部多层图结构。
-    """
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=CHILD_CHUNK_SIZE,
-        chunk_overlap=CHILD_CHUNK_OVERLAP,
-        separators=["\n\n", "\n", "。", "，", " "],
-    )
-    heading_stack: list[str] = []
-    chunks: list[dict] = []
-
-    for page, page_text in pages:
-        section_lines: list[str] = []
-        section_path = " > ".join(heading_stack) or "正文"
-
-        def flush_section() -> None:
-            body = "\n".join(section_lines).strip()
-            if not body:
-                return
-            for child_text in splitter.split_text(body):
-                chunks.append(
-                    {
-                        # 标题路径也放入向量化文本，使“盈利质量”等章节词可以参与召回。
-                        "text": f"【章节】{section_path}\n{child_text}",
-                        "page": page,
-                        "parent_path": section_path,
-                    }
-                )
-
-        for raw_line in page_text.splitlines():
-            line = raw_line.strip()
-            if not line:
-                section_lines.append(raw_line)
-                continue
-            heading = _parse_heading(line)
-            if heading:
-                flush_section()
-                section_lines = []
-                level, title = heading
-                if level <= len(heading_stack):
-                    heading_stack = heading_stack[: level - 1]
-                while len(heading_stack) < level - 1:
-                    heading_stack.append("未命名层级")
-                heading_stack.append(title)
-                section_path = " > ".join(heading_stack)
-            else:
-                section_lines.append(raw_line)
-        flush_section()
-
-    return chunks
-
-
-def _parse_heading(line: str) -> tuple[int, str] | None:
-    """从 Markdown、中文报告或数字标题中提取 (层级, 标题)。"""
-    markdown = _HEADING_PATTERNS[0].match(line)
-    if markdown:
-        return len(markdown.group(1)), markdown.group(2).strip()
-
-    chapter = _HEADING_PATTERNS[1].match(line)
-    if chapter:
-        return 1, " ".join(part for part in chapter.groups() if part).strip()
-
-    chinese = _HEADING_PATTERNS[2].match(line)
-    if chinese:
-        return 2, " ".join(chinese.groups()).strip()
-
-    numeric = _HEADING_PATTERNS[3].match(line)
-    if numeric:
-        number, title = numeric.groups()
-        return number.count(".") + 1, f"{number} {title}".strip()
-    return None
+_build_hierarchical_chunks = build_hierarchical_chunks
+_parse_heading = parse_heading
 
 
 def _parse_pdf_with_mineru(file_bytes: bytes, filename: str) -> list[tuple[int, str]]:
