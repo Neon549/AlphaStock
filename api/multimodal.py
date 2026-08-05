@@ -26,24 +26,13 @@ api/multimodal.py
 """
 
 import hashlib
-import json
-import os
-import shutil
-import subprocess
-import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 import re
 
 from rag.news_indexer import _embed
 from api.multimodal_vision import analyze_image
-from api.document_processing.chunking import (
-    CHILD_CHUNK_OVERLAP,
-    CHILD_CHUNK_SIZE,
-    build_hierarchical_chunks,
-    parse_heading,
-)
+from api.document_processing.chunking import build_hierarchical_chunks
 from api.document_processing.parsers import parse_document_pages
 from api.document_processing import repository as document_repository
 
@@ -51,12 +40,6 @@ from api.document_processing import repository as document_repository
 # ── 临时文档向量库（PostgreSQL + pgvector）────────────────────────────────
 
 COLLECTION_TTL_HOURS = 2  # 2小时后自动清理
-
-# ``process_document`` 已使用 document_processing.parsers；以下私有入口暂留，
-# 只为可能存在的旧内部脚本提供过渡兼容，下一轮会随调用方审计一起移除。
-MINERU_TIMEOUT_SECONDS = int(os.getenv("MINERU_TIMEOUT_SECONDS", "300"))
-MINERU_BACKEND = os.getenv("MINERU_BACKEND", "pipeline")
-MINERU_MODEL_SOURCE = os.getenv("MINERU_MODEL_SOURCE", "modelscope")
 
 _EVIDENCE_ID_PATTERN = re.compile(r"evidence_id=([^|\]]+)")
 _EVIDENCE_FIELD_PATTERN = re.compile(r"(文件|章节|版本)=([^|\]]+)")
@@ -119,7 +102,7 @@ def index_image_analysis(
         f"## 用户问题\n{question or '未提供'}\n"
         f"## VLM 提取事实\n{extracted_data}"
     )
-    chunks = _build_hierarchical_chunks([(0, source_text)])
+    chunks = build_hierarchical_chunks([(0, source_text)])
     if not chunks:
         return {"success": False, "indexed": False, "error": "图像识别结果分块失败"}
 
@@ -188,7 +171,7 @@ def process_document(
         return {"success": False, "error": "文档内容为空"}
 
     document_id = hashlib.sha256(file_bytes).hexdigest()[:16]
-    chunks = _build_hierarchical_chunks(pages)
+    chunks = build_hierarchical_chunks(pages)
 
     if not chunks:
         return {"success": False, "error": "文档分块失败"}
@@ -334,226 +317,3 @@ def _append_evidence(
         f"章节={metadata.get('parent_path', '正文')} | {page_text} | "
         f"版本={metadata.get('document_version', '')}]\n{text}"
     )
-
-
-_build_hierarchical_chunks = build_hierarchical_chunks
-_parse_heading = parse_heading
-
-
-def _parse_pdf_with_mineru(file_bytes: bytes, filename: str) -> list[tuple[int, str]]:
-    """优先用 MinerU 把复杂 PDF 解析为保留结构和页码的内容块。
-
-    MinerU 的 ``content_list_v2.json`` 以页面组织 title/paragraph/table 等块，
-    因此比仅提取 PDF 文字层更适合财报、双栏版面和扫描件。解析失败时返回空列表，
-    调用方会显式降级到现有 PyMuPDF/pdfplumber/OCR 路径。
-    """
-    mineru_bin = shutil.which("mineru")
-    if not mineru_bin:
-        print("[Multimodal] MinerU CLI 未安装，使用本地 PDF 解析降级路径")
-        return []
-
-    safe_name = Path(filename).name or "document.pdf"
-    if Path(safe_name).suffix.lower() != ".pdf":
-        safe_name = "document.pdf"
-
-    with tempfile.TemporaryDirectory(prefix="alphastock_mineru_") as temp_dir:
-        temp_root = Path(temp_dir)
-        source_path = temp_root / safe_name
-        output_dir = temp_root / "output"
-        source_path.write_bytes(file_bytes)
-
-        command = [
-            mineru_bin,
-            "-p", str(source_path),
-            "-o", str(output_dir),
-            "-b", MINERU_BACKEND,
-            "-m", "auto",
-            "-l", "ch",
-        ]
-        try:
-            completed = subprocess.run(
-                command,
-                capture_output=True,
-                timeout=MINERU_TIMEOUT_SECONDS,
-                check=False,
-                env={**os.environ, "MINERU_MODEL_SOURCE": MINERU_MODEL_SOURCE},
-            )
-        except subprocess.TimeoutExpired:
-            print(f"[Multimodal] MinerU 解析超时（>{MINERU_TIMEOUT_SECONDS}s），使用降级路径")
-            return []
-        except OSError as exc:
-            print(f"[Multimodal] 无法启动 MinerU：{exc}")
-            return []
-
-        if completed.returncode != 0:
-            raw_error = completed.stderr or completed.stdout or b""
-            stderr = raw_error.decode("utf-8", errors="replace")[-500:]
-            print(f"[Multimodal] MinerU 解析失败，使用降级路径：{stderr}")
-            return []
-
-        content_lists = list(output_dir.rglob("*_content_list_v2.json"))
-        if content_lists:
-            try:
-                pages = _mineru_content_list_to_pages(content_lists[0])
-                if pages:
-                    return pages
-            except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
-                print(f"[Multimodal] MinerU 结构化结果读取失败：{exc}")
-
-        # 极少数后端只产生 Markdown；仍能保留标题层级，但无法可靠标注页码。
-        markdown_files = list(output_dir.rglob("*.md"))
-        if markdown_files:
-            markdown = markdown_files[0].read_text(encoding="utf-8", errors="ignore")
-            if markdown.strip():
-                return [(0, markdown)]
-
-        print("[Multimodal] MinerU 未产生可消费的 Markdown/内容列表，使用降级路径")
-        return []
-
-
-def _mineru_content_list_to_pages(content_list_path: Path) -> list[tuple[int, str]]:
-    """将 MinerU v3 ``content_list_v2.json`` 转成带 Markdown 标题的页级文本。"""
-    data = json.loads(content_list_path.read_text(encoding="utf-8"))
-    if not isinstance(data, list):
-        return []
-
-    pages: list[tuple[int, str]] = []
-    for page_index, items in enumerate(data, start=1):
-        if not isinstance(items, list):
-            continue
-        blocks: list[str] = []
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            block_type = item.get("type", "")
-            # 页眉、页脚、页码属于版面噪声，不能进入 RAG 证据。
-            if block_type in {"page_header", "page_footer", "page_number", "page_aside_text"}:
-                continue
-            content = item.get("content", {})
-            text = _mineru_content_to_text(content).strip()
-            if not text:
-                continue
-            if block_type == "title":
-                level = content.get("level", 1) if isinstance(content, dict) else 1
-                level = max(1, min(int(level or 1), 6))
-                blocks.append(f"{'#' * level} {text}")
-            elif block_type == "table":
-                blocks.append(f"表格：\n{text}")
-            else:
-                blocks.append(text)
-        if blocks:
-            pages.append((page_index, "\n\n".join(blocks)))
-    return pages
-
-
-def _mineru_content_to_text(value) -> str:
-    """递归兼容 MinerU 内容块中的 span/list/HTML 字段。"""
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        return "".join(_mineru_content_to_text(item) for item in value)
-    if isinstance(value, dict):
-        # 先取最常见的内容字段，避免将 bbox、路径等元数据混入检索文本。
-        preferred = (
-            "content", "title_content", "paragraph_content", "table_body",
-            "table_caption", "table_footnote", "text_content", "list_items",
-            "math_content", "code_content",
-        )
-        parts = [_mineru_content_to_text(value[key]) for key in preferred if key in value]
-        return "\n".join(part for part in parts if part)
-    return ""
-
-
-def _parse_pdf_pages(file_bytes: bytes) -> list[tuple[int, str]]:
-    """解析 PDF，优先提取文字层，失败时 OCR；保留原始页码。"""
-    try:
-        import fitz  # PyMuPDF
-
-        doc = fitz.open(stream=file_bytes, filetype="pdf")
-        pages: list[tuple[int, str]] = []
-
-        for page_number, page in enumerate(doc, start=1):
-            text = page.get_text()
-            if len(text.strip()) > 50:
-                # 有文字层，直接用
-                pages.append((page_number, text))
-            else:
-                # 扫描件，尝试OCR
-                try:
-                    import pytesseract
-                    from PIL import Image
-                    import io
-
-                    mat = fitz.Matrix(2, 2)  # 放大2倍提高OCR精度
-                    pix = page.get_pixmap(matrix=mat)
-                    img = Image.open(io.BytesIO(pix.tobytes("png")))
-                    ocr_text = pytesseract.image_to_string(img, lang="chi_sim+eng")
-                    if ocr_text.strip():
-                        pages.append((page_number, ocr_text))
-                except ImportError:
-                    # 没装pytesseract，跳过OCR
-                    if text.strip():
-                        pages.append((page_number, text))
-
-        return pages
-
-    except ImportError:
-        # 没装PyMuPDF，尝试pdfplumber
-        try:
-            import pdfplumber
-            import io
-
-            with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-                pages: list[tuple[int, str]] = []
-                for page_number, page in enumerate(pdf.pages, start=1):
-                    page_parts = []
-                    text = page.extract_text() or ""
-                    # 提取表格
-                    tables = page.extract_tables()
-                    for table in tables:
-                        for row in table:
-                            if row:
-                                page_parts.append(" | ".join(str(c) for c in row if c))
-                    if text:
-                        page_parts.append(text)
-                    if page_parts:
-                        pages.append((page_number, "\n".join(page_parts)))
-                return pages
-        except Exception as e:
-            raise Exception(f"PDF解析失败（需要安装 PyMuPDF 或 pdfplumber）: {e}")
-
-
-def _parse_docx(file_bytes: bytes) -> str:
-    """解析Word文档"""
-    try:
-        from docx import Document
-        import io
-
-        doc = Document(io.BytesIO(file_bytes))
-        paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-
-        # 提取表格
-        table_texts = []
-        for table in doc.tables:
-            for row in table.rows:
-                row_text = " | ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
-                if row_text:
-                    table_texts.append(row_text)
-
-        return "\n".join(paragraphs + table_texts)
-
-    except ImportError:
-        raise Exception("解析Word文档需要安装 python-docx：pip install python-docx")
-
-
-def _parse_csv(file_bytes: bytes) -> str:
-    """解析CSV文件"""
-    try:
-        import pandas as pd
-        import io
-
-        df = pd.read_csv(io.BytesIO(file_bytes), encoding="utf-8-sig")
-        return df.to_string(index=False, max_rows=200)
-    except Exception as e:
-        # 纯文本方式
-        return file_bytes.decode("utf-8-sig", errors="ignore")
