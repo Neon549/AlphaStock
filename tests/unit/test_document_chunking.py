@@ -4,6 +4,7 @@ import unittest
 
 from api.document_processing.chunking import build_hierarchical_chunks, parse_heading
 from api.document_processing.parsers import parse_document_pages
+from api.document_processing.retrieval import extract_document_citations
 
 
 class DocumentChunkingTests(unittest.TestCase):
@@ -28,3 +29,13 @@ class DocumentChunkingTests(unittest.TestCase):
 
         self.assertEqual(parser, "plain-text")
         self.assertEqual(pages, [(0, "研发投入增长")])
+
+    def test_evidence_headers_are_converted_to_citations(self):
+        citations = extract_document_citations(
+            "[命中子块 | evidence_id=doc_a_1 | 文件=年报.pdf | 章节=经营情况 | 第 12 页 | 版本=v1]\n现金流改善"
+        )
+
+        self.assertEqual(citations[0]["evidence_id"], "doc_a_1")
+        self.assertEqual(citations[0]["filename"], "年报.pdf")
+        self.assertEqual(citations[0]["section"], "经营情况")
+        self.assertEqual(citations[0]["page"], 12)
