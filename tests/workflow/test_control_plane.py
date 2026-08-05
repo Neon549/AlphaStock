@@ -45,6 +45,49 @@ class ControlPlaneTests(unittest.TestCase):
         runner = InvestmentRuntime()._workflow()
         self.assertIsInstance(runner.__self__, PythonInvestmentRuntime)
 
+    def test_runtime_uses_agent_loop_by_default_for_investment_requests(self):
+        calls = []
+
+        def agent_loop(state):
+            calls.append(state)
+            return {
+                "publish_status": "requires_human_review",
+                "final_decision": "draft",
+                "agent_trace": [],
+            }
+
+        runtime = InvestmentRuntime(
+            intent_parser=lambda _: {
+                "intent": 2,
+                "stock_code": "600519",
+                "stock_name": "贵州茅台",
+                "analyst_focus": "technical",
+            },
+            skill_selector=lambda *args, **kwargs: [],
+            agent_loop_runner=agent_loop,
+        )
+        result = runtime.run(AgentEvent(TriggerType.MESSAGE, "分析茅台"))
+        self.assertEqual(result.route, "investment_agent_loop")
+        self.assertEqual(calls[0]["stock_code"], "600519")
+
+    def test_runtime_can_retain_the_fixed_workflow_as_an_explicit_fallback(self):
+        calls = []
+
+        def workflow(stock_code, **kwargs):
+            calls.append(stock_code)
+            return {"publish_status": "requires_human_review", "final_decision": "draft"}
+
+        runtime = InvestmentRuntime(
+            intent_parser=lambda _: {"intent": 2, "stock_code": "600519", "stock_name": "贵州茅台", "analyst_focus": "all"},
+            workflow_runner=workflow,
+            skill_selector=lambda *args, **kwargs: [],
+            skill_executor=lambda *args, **kwargs: {},
+            execution_mode="workflow",
+        )
+        result = runtime.run(AgentEvent(TriggerType.MESSAGE, "分析茅台"))
+        self.assertEqual(result.route, "investment_workflow")
+        self.assertEqual(calls, ["600519"])
+
     def test_gateway_deduplicates_an_event_without_executing_runtime_twice(self):
         runtime = _Runtime()
         gateway = Gateway(runtime)

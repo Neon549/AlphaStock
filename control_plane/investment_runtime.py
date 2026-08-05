@@ -32,6 +32,8 @@ class InvestmentRuntime:
         memory_manager: MemoryManager | None = None,
         context_builder: ContextWindowBuilder | None = None,
         workflow_runtime: str | None = None,
+        execution_mode: str | None = None,
+        agent_loop_runner: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ):
         self._intent_parser = intent_parser
         self._workflow_runner = workflow_runner
@@ -44,6 +46,11 @@ class InvestmentRuntime:
         if configured_runtime not in {"langgraph", "python"}:
             raise ValueError("workflow_runtime must be 'langgraph' or 'python'")
         self._workflow_runtime = configured_runtime
+        configured_mode = execution_mode or os.getenv("INVESTMENT_EXECUTION_MODE", "agent_loop")
+        if configured_mode not in {"agent_loop", "workflow"}:
+            raise ValueError("execution_mode must be 'agent_loop' or 'workflow'")
+        self._execution_mode = configured_mode
+        self._agent_loop_runner = agent_loop_runner
 
     def _deps(self) -> None:
         """Load only routing dependencies; model/workflow imports stay branch-local."""
@@ -86,6 +93,13 @@ class InvestmentRuntime:
                 self._workflow_runner = LangGraphInvestmentRuntime().run
         return self._workflow_runner
 
+    def _agent_loop(self) -> Callable[[dict[str, Any]], dict[str, Any]]:
+        if self._agent_loop_runner is None:
+            from agent_runtime.agents.investment_harness import run_investment_agent_loop
+
+            self._agent_loop_runner = run_investment_agent_loop
+        return self._agent_loop_runner
+
     def _skills(self) -> tuple[Callable[..., list[Any]], Callable[..., Any]]:
         if self._skill_selector is None or self._skill_executor is None:
             from agent_runtime.skills.registry import skill_registry
@@ -124,6 +138,20 @@ class InvestmentRuntime:
             query=event.content,
         )
         return result.get("context", ""), result.get("citations", []), versions, summaries
+
+    def _select_skill_summaries(self, event: AgentEvent, parsed: dict[str, Any]) -> tuple[list[str], list[str]]:
+        """Expose the allowed Skill catalog to the planner without pre-running a Skill."""
+        skill_selector, _ = self._skills()
+        selected = skill_selector(
+            event.content,
+            context={"has_session_document": bool(event.session_id), "intent": parsed["intent"]},
+            granted_permissions={"document:read", "market:read", "backtest:run", "memory:read"},
+            llm=None,
+        )
+        return (
+            [skill.version_id for skill in selected],
+            [f"{skill.name} ({skill.version}): {skill.description}" for skill in selected],
+        )
 
     def run(self, event: AgentEvent) -> AgentRunResult:
         self._deps()
@@ -174,7 +202,16 @@ class InvestmentRuntime:
             result = self._direct_reply(run_id, "clarify", "请补充可确认的 A 股名称或六位代码。", 4)
             result.trace = base_trace + result.trace
             return result
-        doc_context, citations, skill_versions, skill_summaries = self._retrieve_document_context(event, parsed)
+        # An injected workflow runner is used by unit tests and by callers that
+        # explicitly opt into the fixed compatibility workflow. Production uses
+        # the agent loop by default, so document retrieval remains a planner
+        # decision instead of an unconditional pre-step.
+        use_fixed_workflow = self._workflow_runner is not None or self._execution_mode == "workflow"
+        if use_fixed_workflow:
+            doc_context, citations, skill_versions, skill_summaries = self._retrieve_document_context(event, parsed)
+        else:
+            skill_versions, skill_summaries = self._select_skill_summaries(event, parsed)
+            doc_context, citations = "", []
         try:
             window = self._context_builder.build(
                 profile="research",
@@ -188,17 +225,35 @@ class InvestmentRuntime:
             )
             result.trace = base_trace + [{"event": "context_budget_blocked", "profile": "research"}]
             return result
-        result = self._workflow()(
-            stock_code,
-            doc_context=doc_context,
-            document_citations=citations,
-            session_id=event.session_id,
-            analysis_query=query,
-            analyst_focus=parsed.get("analyst_focus") or "all",
-            memory_context=memory_context,
-            agent_context=window.text,
-            model_profile=model_profile,
-        )
+        if use_fixed_workflow:
+            result = self._workflow()(
+                stock_code,
+                doc_context=doc_context,
+                document_citations=citations,
+                session_id=event.session_id,
+                analysis_query=query,
+                analyst_focus=parsed.get("analyst_focus") or "all",
+                memory_context=memory_context,
+                agent_context=window.text,
+                model_profile=model_profile,
+            )
+            route = "investment_workflow"
+        else:
+            from control_plane.model_profile import model_scope
+
+            with model_scope(model_profile):
+                result = self._agent_loop()({
+                    "stock_code": stock_code,
+                    "user_doc_context": doc_context,
+                    "document_citations": citations,
+                    "session_id": event.session_id,
+                    "analysis_query": query,
+                    "analyst_focus": parsed.get("analyst_focus") or "all",
+                    "memory_context": memory_context,
+                    "agent_context": window.text,
+                    "model_profile": model_profile,
+                })
+            route = "investment_agent_loop"
         payload = {
             "role": "assistant",
             "intent": intent,
@@ -214,7 +269,7 @@ class InvestmentRuntime:
             "publish_status": result.get("publish_status", "blocked"),
             "publish_reasons": result.get("publish_reasons", []),
             "human_review_required": result.get("human_review_required", False),
-            "document_citations": citations,
+            "document_citations": result.get("document_citations", citations),
             "evidence_cards": result.get("evidence_cards", []),
             "selected_skills": skill_versions,
             "workflow_result": result,
@@ -222,10 +277,10 @@ class InvestmentRuntime:
         self._memory.remember_run(event, parsed, result, payload["decision"], run_id)
         return AgentRunResult(
             run_id=run_id,
-            route="investment_workflow",
+            route=route,
             payload=payload,
             trace=base_trace + [
-                {"event": "route_selected", "route": "investment_workflow", "stock_code": stock_code},
+                {"event": "route_selected", "route": route, "stock_code": stock_code},
                 {"event": "skills_selected", "versions": skill_versions},
                 {
                     "event": "context_window_built",

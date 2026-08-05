@@ -56,15 +56,19 @@ tests/          unit, workflow, integration and evaluation tests
 runtime/        ignored local state: reports, caches and checkpoints
 ```
 
-`agent_runtime.workflows.PythonInvestmentRuntime` is the default runtime.
-`LangGraphInvestmentRuntime` remains an adapter for compatibility and
-cross-runtime regression comparison; it is not the architectural centre.
+`InvestmentRuntime` defaults to a governed Agent Loop: the model may choose
+among analysis, document RAG, backtest and approved-memory search, while the
+Harness enforces a static read-only allowlist, duplicate suppression, a four-step
+budget, evidence persistence and deterministic publication governance.
+`PythonInvestmentRuntime` is retained as the fixed-workflow fallback
+(`INVESTMENT_EXECUTION_MODE=workflow`); `LangGraphInvestmentRuntime` remains an
+opt-in compatibility adapter for rollback and cross-runtime comparison.
 
 ## Tech Stack
 
 | Layer | Technology |
 |---|---|
-| Agent Orchestration | Python state machine (default) + LangGraph compatibility runtime |
+| Agent Orchestration | Governed Agent Loop (default) + Python fixed-workflow / LangGraph compatibility fallbacks |
 | LLM | DeepSeek V3 (primary) / Qwen (auto-fallback) |
 | Technical Analysis Model | TechLens-1.5B (Qwen3 fine-tuned, local inference) |
 | RAG Retrieval | BM25 + pgvector + RRF hybrid search |
