@@ -1,6 +1,7 @@
 import unittest
 
 from evaluation.rag_golden_eval import evaluate_answer_governance, evaluate_retrieval_cases
+from evaluation.rag_snapshot_retrievers import build_bm25_retriever, build_dense_retriever, build_hybrid_rrf_retriever
 
 
 class RagGoldenEvalTests(unittest.TestCase):
@@ -29,3 +30,17 @@ class RagGoldenEvalTests(unittest.TestCase):
         })
         self.assertEqual(result["citation_backlink_rate"], 0.0)
         self.assertEqual(result["unsupported_answer_rate"], 1.0)
+
+    def test_snapshot_adapters_return_original_evidence_records(self):
+        corpus = [
+            {"evidence_id": "cash", "filename": "annual.md", "page": 32, "section": "Cash", "content": "operating cash flow 12.30"},
+            {"evidence_id": "revenue", "filename": "annual.md", "page": 18, "section": "Revenue", "content": "revenue 20.50"},
+        ]
+        embedding = lambda texts: [[1.0, 0.0] if "cash" in text else [0.0, 1.0] for text in texts]
+        bm25 = build_bm25_retriever(corpus)
+        dense = build_dense_retriever(corpus, embedding)
+        hybrid = build_hybrid_rrf_retriever(corpus, bm25, dense)
+
+        self.assertEqual(bm25("cash flow", top_k=1)[0]["evidence_id"], "cash")
+        self.assertEqual(dense("cash flow", top_k=1)[0]["evidence_id"], "cash")
+        self.assertEqual(hybrid("cash flow", top_k=1)[0]["page"], 32)
