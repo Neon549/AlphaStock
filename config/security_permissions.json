@@ -1,0 +1,28 @@
+{
+  "allow": [
+    "read(*)",
+    "list(*)",
+    "market(*)",
+    "market:read",
+    "document:read",
+    "memory:read",
+    "backtest:run",
+    "agent(*)",
+    "backtest(*)",
+    "upload(document)",
+    "alpha(*)"
+  ],
+  "deny": [
+    "shell(*)",
+    "bash(*)",
+    "write(.git/*)",
+    "edit(.git/*)",
+    "write(.claude/*)",
+    "edit(.claude/*)",
+    "write(.env*)",
+    "edit(.env*)",
+    "publish(*)",
+    "trade(*)"
+  ],
+  "ask": []
+}

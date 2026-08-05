@@ -1,82 +1,57 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-api/auth_google.py  ──  Google OAuth 2.0 登录（PostgreSQL 版）
-"""
+"""Google OAuth routes with server-side token verification."""
+
+from __future__ import annotations
 
 import os
-import secrets
-import hashlib
+from urllib.parse import urlencode
+
 import httpx
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import RedirectResponse
-from urllib.parse import urlencode
 from pydantic import BaseModel
 
+from api.auth import issue_token
 from db import execute
 
-router = APIRouter()
 
+router = APIRouter()
 CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 REDIRECT_URI = os.getenv(
     "GOOGLE_REDIRECT_URI", "https://alphastock.cloud/api/v1/auth/google/callback"
 )
-FRONTEND_URL = "https://alphastock.cloud"
-
-
-# ── 内部：查找或创建 Google 用户 ──────────────────────────────────────
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://alphastock.cloud").rstrip("/")
 
 
 def _upsert_google_user(email: str, name: str, google_id: str) -> str:
-    """
-    查找已有账号（by google_id 或 email）→ 更新 token
-    找不到 → 新建用户
-    返回 new_token
-    """
-    new_token = secrets.token_hex(16)
-
     row = execute(
         "SELECT username FROM users WHERE google_id = %s OR username = %s",
         (google_id, email),
         fetch="one",
     )
-
     if row:
         username = row[0]
         execute(
-            "UPDATE users SET token = %s WHERE username = %s",
-            (new_token, username),
+            "UPDATE users SET email = %s, google_id = %s WHERE username = %s",
+            (email, google_id, username),
         )
     else:
         username = email
-        pw_hash = hashlib.sha256(secrets.token_hex(32).encode()).hexdigest()
         execute(
             """
-            INSERT INTO users (username, password_hash, salt, google_id, token)
-            VALUES (%s, %s, '', %s, %s)
-            ON CONFLICT (username) DO UPDATE SET token = EXCLUDED.token
+            INSERT INTO users (username, password_hash, salt, email, google_id, token)
+            VALUES (%s, '', '', %s, %s, '')
+            ON CONFLICT (username) DO UPDATE SET email = EXCLUDED.email, google_id = EXCLUDED.google_id
             """,
-            (username, pw_hash, google_id, new_token),
+            (username, email, google_id),
         )
-
-    # 同步写入 tokens 表（供 verify_token 使用）
-    execute(
-        """
-        INSERT INTO tokens (token, username) VALUES (%s, %s)
-        ON CONFLICT (token) DO NOTHING
-        """,
-        (new_token, username),
-    )
-
-    return new_token
-
-
-# ── OAuth 重定向流程 ───────────────────────────────────────────────────
+    return issue_token(username)
 
 
 @router.get("/auth/google")
 def google_login():
+    if not CLIENT_ID:
+        raise HTTPException(503, detail="Google login is not configured")
     params = {
         "client_id": CLIENT_ID,
         "redirect_uri": REDIRECT_URI,
@@ -84,19 +59,17 @@ def google_login():
         "scope": "openid email profile",
         "access_type": "offline",
     }
-    url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
-    return RedirectResponse(url)
+    return RedirectResponse("https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params))
 
 
 @router.get("/auth/google/callback")
-async def google_callback(code: str = None, error: str = None):
+async def google_callback(code: str | None = None, error: str | None = None):
     if error:
         return RedirectResponse(f"{FRONTEND_URL}?login_error={error}")
-    if not code:
-        return RedirectResponse(f"{FRONTEND_URL}?login_error=no_code")
+    if not code or not CLIENT_ID or not CLIENT_SECRET:
+        return RedirectResponse(f"{FRONTEND_URL}?login_error=google_not_configured")
 
-    # code → access_token
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=8.0) as client:
         token_resp = await client.post(
             "https://oauth2.googleapis.com/token",
             data={
@@ -107,59 +80,63 @@ async def google_callback(code: str = None, error: str = None):
                 "grant_type": "authorization_code",
             },
         )
-    token_data = token_resp.json()
-    access_token = token_data.get("access_token")
-    if not access_token:
-        return RedirectResponse(f"{FRONTEND_URL}?login_error=token_failed")
-
-    # access_token → 用户信息
-    async with httpx.AsyncClient() as client:
+        token_data = token_resp.json()
+        access_token = token_data.get("access_token")
+        if not access_token:
+            return RedirectResponse(f"{FRONTEND_URL}?login_error=token_failed")
         user_resp = await client.get(
             "https://www.googleapis.com/oauth2/v2/userinfo",
             headers={"Authorization": f"Bearer {access_token}"},
         )
+    if user_resp.status_code != 200:
+        return RedirectResponse(f"{FRONTEND_URL}?login_error=userinfo_failed")
     user_info = user_resp.json()
-    email = user_info.get("email", "")
-    name = user_info.get("name", email.split("@")[0])
-    google_id = user_info.get("id", "")
+    email = str(user_info.get("email") or "").strip().lower()
+    name = str(user_info.get("name") or email.split("@")[0]).strip()
+    google_id = str(user_info.get("id") or "").strip()
+    if not email or not google_id:
+        return RedirectResponse(f"{FRONTEND_URL}?login_error=invalid_profile")
 
     token = _upsert_google_user(email, name, google_id)
-
-    params = urlencode(
-        {
-            "google_login": "success",
-            "token": token,
-            "username": name or email.split("@")[0],
-        }
+    return RedirectResponse(
+        f"{FRONTEND_URL}?" + urlencode({"google_login": "success", "token": token, "username": email})
     )
-    return RedirectResponse(f"{FRONTEND_URL}?{params}")
 
 
-# ── 前端直接传 Google 用户信息（One Tap 流程）────────────────────────
-
-
-class GoogleTokenRequest2(BaseModel):
+class GoogleTokenRequest(BaseModel):
+    access_token: str = ""
     id_token: str = ""
-    email: str = ""
-    name: str = ""
-    google_id: str = ""
 
 
 @router.post("/auth/google/token")
-async def google_token_login(request: GoogleTokenRequest2):
-    """接收前端解析的 Google 用户信息，直接注册/登录"""
-    email = request.email
-    name = request.name or (email.split("@")[0] if email else "Google用户")
-    google_id = request.google_id
+async def google_token_login(request: GoogleTokenRequest):
+    """Verify the access token at Google; never trust client profile claims."""
 
-    if not email and not google_id:
-        raise HTTPException(400, detail="缺少用户信息")
-
-    token = _upsert_google_user(email, name, google_id)
-    username = email
-
+    if not request.access_token and not request.id_token:
+        raise HTTPException(400, detail="Google token is required")
+    async with httpx.AsyncClient(timeout=8.0) as client:
+        if request.access_token:
+            response = await client.get(
+                "https://www.googleapis.com/oauth2/v2/userinfo",
+                headers={"Authorization": f"Bearer {request.access_token}"},
+            )
+        else:
+            # Google validates the signed ID token server-side.  The claims
+            # posted by the browser are never used as identity evidence.
+            response = await client.get(
+                "https://oauth2.googleapis.com/tokeninfo",
+                params={"id_token": request.id_token},
+            )
+    if response.status_code != 200:
+        raise HTTPException(401, detail="Google token is invalid")
+    user_info = response.json()
+    email = str(user_info.get("email") or "").strip().lower()
+    name = str(user_info.get("name") or email.split("@")[0]).strip()
+    google_id = str(user_info.get("id") or "").strip()
+    if not email or not google_id:
+        raise HTTPException(401, detail="Google account verification failed")
     return {
-        "token": token,
-        "username": username,
-        "display_name": name or username.split("@")[0],
+        "token": _upsert_google_user(email, name, google_id),
+        "username": email,
+        "display_name": name or email.split("@")[0],
     }

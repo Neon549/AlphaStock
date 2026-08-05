@@ -10,6 +10,8 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from control_plane.security import SecurityOperation, authorize_operation
+
 
 SKILLS_DIR = Path(__file__).parent
 
@@ -140,6 +142,10 @@ class SkillRegistry:
         skill = self.get(name)
         if not self._allowed(skill, granted_permissions):
             raise PermissionError(f"Missing permission for skill {name}: {skill.permissions}")
+        for permission in skill.permissions:
+            # Permission strings are the capability boundary.  The handler
+            # still receives only the arguments selected by the runtime.
+            authorize_operation(SecurityOperation(tool=permission), mode="auto")
         if not skill.entrypoint:
             raise ValueError(f"Skill {name} has no executable entrypoint")
         module_name, function_name = skill.entrypoint.split(":", 1)

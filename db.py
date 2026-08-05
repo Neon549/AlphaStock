@@ -96,8 +96,14 @@ CREATE INDEX IF NOT EXISTS idx_users_token     ON users(token);
 CREATE TABLE IF NOT EXISTS tokens (
     token      TEXT PRIMARY KEY,
     username   TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ,
+    revoked_at TIMESTAMPTZ
 );
+ALTER TABLE tokens ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+ALTER TABLE tokens ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_tokens_username ON tokens(username);
+CREATE INDEX IF NOT EXISTS idx_tokens_expires ON tokens(expires_at);
 
 -- ── 密码重置 token ─────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS password_reset_tokens (
@@ -173,6 +179,16 @@ CREATE TABLE IF NOT EXISTS conversations_store (
 );
 CREATE INDEX IF NOT EXISTS idx_cs_username ON conversations_store(username);
 CREATE INDEX IF NOT EXISTS idx_cs_updated  ON conversations_store(updated_at);
+
+-- Temporary upload sessions are tenant-owned.  The vector table is keyed by
+-- session_id, so this small ownership table is the authorization boundary.
+CREATE TABLE IF NOT EXISTS upload_sessions (
+    session_id TEXT PRIMARY KEY,
+    actor_id   TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '24 hours')
+);
+CREATE INDEX IF NOT EXISTS idx_upload_sessions_actor ON upload_sessions(actor_id, created_at DESC);
 
 -- ── Control plane audit trail ───────────────────────────────────────
 -- Event is the idempotency boundary.  Runs and steps are intentionally

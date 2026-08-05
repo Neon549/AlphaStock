@@ -18,6 +18,7 @@ from agent_runtime.context.compaction import (
     is_context_overflow_error,
     persist_tool_result,
 )
+from control_plane.security import SecurityOperation, authorize_operation
 
 
 MAX_TOOL_CALLS = 3
@@ -266,6 +267,24 @@ Previous tool observations:
             trace.append({"step": step + 1, "event": "duplicate_tool_skipped", "tool": tool_name})
             continue
         executed_tool_requests.add(request_key)
+
+        permission_tool = {
+            "document-rag": "document:read",
+            "memory-search": "memory:read",
+        }.get(tool_name, "market:read")
+        try:
+            authorize_operation(
+                SecurityOperation(
+                    tool=permission_tool,
+                    target=tool_name,
+                    actor_id=None,
+                    session_id=session_id,
+                ),
+                mode="auto",
+            )
+        except PermissionError:
+            trace.append({"step": step + 1, "event": "permission_denied", "tool": tool_name})
+            break
 
         started = time.monotonic()
         try:

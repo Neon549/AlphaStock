@@ -1,29 +1,26 @@
-"""
-auth_routes.py
-轻量路由：登录/注册/token验证/对话记录
-不依赖 LangGraph/LangChain，启动时立即加载
-"""
+"""Lightweight authentication and user-owned conversation routes."""
 
-import json as _json
+from __future__ import annotations
+
 import datetime
-from fastapi import APIRouter, HTTPException
+import json as _json
+from urllib.parse import unquote
+
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
-from api.auth import (
-    register as _register,
-    login as _login,
-    verify_token as _verify,
-    logout as _logout,
-)
+from api.auth import login as _login
+from api.auth import logout as _logout
+from api.auth import register as _register
+from api.auth import verify_token as _verify
+from api.auth_reset import router as reset_router
+from api.security import require_actor, require_owned_conversation
 from db import execute
 
-from api.auth_reset import router as reset_router
 
 router = APIRouter()
 router.include_router(reset_router)
 
-
-# ── 认证 ──────────────────────────────────────────────────────────────
 
 class AuthRequest(BaseModel):
     username: str
@@ -61,12 +58,23 @@ def auth_logout(request: TokenRequest):
     return _logout(request.token)
 
 
-# ── 对话记录 ───────────────────────────────────────────────────────────
+def _authenticated(
+    x_auth_token: str | None,
+    authorization: str | None,
+) -> str:
+    return require_actor(x_auth_token=x_auth_token, authorization=authorization)
+
 
 @router.get("/conversations/{username}")
-def get_conversations(username: str):
-    from urllib.parse import unquote
-    username = unquote(username)
+def get_conversations(
+    username: str,
+    x_auth_token: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+):
+    actor_id = _authenticated(x_auth_token, authorization)
+    requested = unquote(username)
+    if requested != actor_id:
+        raise HTTPException(status_code=403, detail="cannot access another user's conversations")
     rows = execute(
         """
         SELECT id, title, messages
@@ -75,13 +83,13 @@ def get_conversations(username: str):
         ORDER BY updated_at DESC
         LIMIT 20
         """,
-        (username,),
+        (actor_id,),
         fetch="all",
     )
     return {
         "conversations": [
-            {"id": r[0], "title": r[1], "messages": _json.loads(r[2])}
-            for r in (rows or [])
+            {"id": row[0], "title": row[1], "messages": _json.loads(row[2])}
+            for row in (rows or [])
         ]
     }
 
@@ -94,30 +102,47 @@ class ConvSaveRequest(BaseModel):
 
 
 @router.post("/conversations/save")
-def save_conversation(request: ConvSaveRequest):
-    from urllib.parse import unquote
-    username = unquote(request.username)
+def save_conversation(
+    request: ConvSaveRequest,
+    x_auth_token: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+):
+    actor_id = _authenticated(x_auth_token, authorization)
+    if unquote(request.username) != actor_id:
+        raise HTTPException(status_code=403, detail="cannot save for another user")
+    if len(request.id) > 128 or len(request.title) > 200 or len(request.messages) > 500:
+        raise HTTPException(status_code=400, detail="conversation payload is too large")
+
+    existing = execute("SELECT username FROM conversations_store WHERE id = %s", (request.id,), fetch="one")
+    if existing and existing[0] != actor_id:
+        raise HTTPException(status_code=403, detail="conversation belongs to another user")
     execute(
         """
         INSERT INTO conversations_store (id, username, title, messages, updated_at)
         VALUES (%s, %s, %s, %s, %s)
         ON CONFLICT (id) DO UPDATE SET
-            title      = EXCLUDED.title,
-            messages   = EXCLUDED.messages,
+            title = EXCLUDED.title,
+            messages = EXCLUDED.messages,
             updated_at = EXCLUDED.updated_at
         """,
         (
             request.id,
-            username,
+            actor_id,
             request.title,
             _json.dumps(request.messages, ensure_ascii=False),
-            datetime.datetime.now().isoformat(),
+            datetime.datetime.now(datetime.timezone.utc),
         ),
     )
     return {"ok": True}
 
 
 @router.delete("/conversations/{conv_id}")
-def delete_conversation(conv_id: str):
-    execute("DELETE FROM conversations_store WHERE id = %s", (conv_id,))
+def delete_conversation(
+    conv_id: str,
+    x_auth_token: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+):
+    actor_id = _authenticated(x_auth_token, authorization)
+    require_owned_conversation(conv_id, actor_id)
+    execute("DELETE FROM conversations_store WHERE id = %s AND username = %s", (conv_id, actor_id))
     return {"ok": True}

@@ -1,7 +1,8 @@
 import os
 import sys
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 # Database initialisation happens before the FastAPI server owns stdout.
@@ -18,13 +19,35 @@ app = FastAPI(
     version="2.0.0",
 )
 
+_cors_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "ALPHASTOCK_CORS_ORIGINS",
+        "https://alphastock.cloud,http://localhost:3000,http://localhost:5173",
+    ).split(",")
+    if origin.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Auth-Token", "Idempotency-Key"],
 )
+
+
+@app.middleware("http")
+async def request_size_guard(request: Request, call_next):
+    """Reject oversized bodies before FastAPI parses JSON or multipart data."""
+
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > 25 * 1024 * 1024:
+                return JSONResponse(status_code=413, content={"detail": "request body is too large"})
+        except ValueError:
+            return JSONResponse(status_code=400, content={"detail": "invalid content length"})
+    return await call_next(request)
 
 # The business router is imported after the HTTP server has started so a slow
 # RAG/LLM dependency cannot block the basic health endpoint.  Keep its state
