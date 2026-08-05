@@ -9,6 +9,7 @@ human-review requirement and analyst/evidence availability.
 Examples:
   python scripts/compare_workflow_runtimes.py 600519
   python scripts/compare_workflow_runtimes.py 600519 --execute --output runtime/reports/runtime-compare-600519.json
+  python scripts/compare_workflow_runtimes.py 600519 --execute --document-context-file evaluation/fixtures/runtime_compare_document_context.txt --document-citations-file evaluation/fixtures/runtime_compare_document_citations.json
 """
 
 from __future__ import annotations

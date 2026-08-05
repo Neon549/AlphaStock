@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 from scripts.compare_workflow_runtimes import (
     compare_backtest_contracts,
@@ -9,6 +10,14 @@ from scripts.compare_workflow_runtimes import (
 
 
 class RuntimeComparisonTests(unittest.TestCase):
+    def test_sanitised_document_fixture_has_evidence_backlinks(self):
+        root = Path(__file__).resolve().parents[2]
+        context = (root / "evaluation/fixtures/runtime_compare_document_context.txt").read_text(encoding="utf-8")
+        citations = (root / "evaluation/fixtures/runtime_compare_document_citations.json").read_text(encoding="utf-8")
+
+        self.assertIn("evidence_id=fixture:annual-report-2025:p32:0", context)
+        self.assertIn('"page": 32', citations)
+
     def test_summary_uses_stable_contract_fields(self):
         summary = summarize_result(
             {

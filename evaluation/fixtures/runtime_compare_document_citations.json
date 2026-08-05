@@ -1,0 +1,16 @@
+[
+  {
+    "evidence_id": "fixture:annual-report-2025:p32:0",
+    "filename": "fixture-annual-report-2025.md",
+    "section": "Cash Flow Statement",
+    "page": 32,
+    "document_version": "fixture-v1"
+  },
+  {
+    "evidence_id": "fixture:annual-report-2025:p18:0",
+    "filename": "fixture-annual-report-2025.md",
+    "section": "Revenue",
+    "page": 18,
+    "document_version": "fixture-v1"
+  }
+]

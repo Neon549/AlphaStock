@@ -1,0 +1,5 @@
+[命中子块 | evidence_id=fixture:annual-report-2025:p32:0 | 文件=fixture-annual-report-2025.md | 章节=Cash Flow Statement | 第 32 页 | 版本=fixture-v1]
+Net cash flows from operating activities were 12.30 billion CNY for the reporting period.
+
+[命中子块 | evidence_id=fixture:annual-report-2025:p18:0 | 文件=fixture-annual-report-2025.md | 章节=Revenue | 第 18 页 | 版本=fixture-v1]
+Revenue was 20.50 billion CNY for the reporting period.
