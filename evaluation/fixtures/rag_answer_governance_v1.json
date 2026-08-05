@@ -1,0 +1,29 @@
+{
+  "fixture-cash-flow-001": {
+    "abstained": false,
+    "citations": [
+      {
+        "filename": "fixture-annual-report-2025.md",
+        "page": 32,
+        "section": "Cash Flow Statement"
+      }
+    ],
+    "unsupported_claims": []
+  },
+  "fixture-revenue-002": {
+    "abstained": false,
+    "citations": [
+      {
+        "filename": "fixture-annual-report-2025.md",
+        "page": 18,
+        "section": "Revenue"
+      }
+    ],
+    "unsupported_claims": []
+  },
+  "fixture-no-dividend-003": {
+    "abstained": true,
+    "citations": [],
+    "unsupported_claims": []
+  }
+}

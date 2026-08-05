@@ -1,4 +1,6 @@
 import unittest
+import json
+from pathlib import Path
 
 from evaluation.rag_golden_eval import evaluate_answer_governance, evaluate_retrieval_cases
 from evaluation.rag_snapshot_retrievers import build_bm25_retriever, build_dense_retriever, build_hybrid_rrf_retriever
@@ -52,3 +54,21 @@ class RagGoldenEvalTests(unittest.TestCase):
         }]
         result = evaluate_retrieval_cases(cases, lambda _query, *, top_k: [], k=3)
         self.assertEqual(result["abstain_retrieval_compliance_rate"], 1.0)
+
+    def test_versioned_answer_fixture_passes_citation_and_abstention_contracts(self):
+        root = Path(__file__).resolve().parents[2]
+        answers = json.loads((root / "evaluation" / "fixtures" / "rag_answer_governance_v1.json").read_text(encoding="utf-8"))
+        cases = [{
+            "id": "fixture-cash-flow-001",
+            "expected": {"required_citations": [{"filename": "fixture-annual-report-2025.md", "page": 32, "section": "Cash Flow Statement"}], "abstain_allowed": False},
+        }, {
+            "id": "fixture-revenue-002",
+            "expected": {"required_citations": [{"filename": "fixture-annual-report-2025.md", "page": 18, "section": "Revenue"}], "abstain_allowed": False},
+        }, {
+            "id": "fixture-no-dividend-003",
+            "expected": {"required_citations": [], "abstain_allowed": True},
+        }]
+        result = evaluate_answer_governance(cases, answers)
+        self.assertEqual(result["citation_backlink_rate"], 1.0)
+        self.assertEqual(result["abstain_compliance_rate"], 1.0)
+        self.assertEqual(result["unsupported_answer_rate"], 0.0)
