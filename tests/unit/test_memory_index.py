@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agent_runtime.memory.index import _chunks, _file_chunks, approved_memory_files
+from agent_runtime.memory.index import MEMORY_KNOWLEDGE_DIR, _chunks, _file_chunks, approved_memory_files
 
 
 class MemoryIndexTests(unittest.TestCase):
@@ -26,6 +26,16 @@ class MemoryIndexTests(unittest.TestCase):
         self.assertTrue(chunks[0].startswith("# First"))
         self.assertIn("# Second", chunks[-1])
         self.assertTrue(all(len(chunk) <= 600 for chunk in chunks))
+
+    def test_bootstrap_corpus_covers_all_controlled_memory_scopes(self):
+        scopes = {
+            _file_chunks(path, MEMORY_KNOWLEDGE_DIR)[0].metadata["scope"]
+            for path in approved_memory_files()
+        }
+        self.assertEqual(
+            scopes,
+            {"governance", "research", "retrieval", "workflow", "operations", "backtest", "evaluation"},
+        )
 
 
 if __name__ == "__main__":

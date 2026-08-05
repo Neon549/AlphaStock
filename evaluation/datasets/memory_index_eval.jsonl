@@ -1,1 +1,7 @@
 {"id":"memory-governance-evidence-boundary","query":"工具数据不足或相互冲突时，经验规则要求如何处理？","relevant_source_paths":["governance/evidence-boundary.md"]}
+{"id":"memory-research-source-conflict","query":"不同数据来源的财务字段冲突时，研究结论应该如何降级？","scope":"research","relevant_source_paths":["research/source-conflict.md"]}
+{"id":"memory-retrieval-citation-linking","query":"上传文档命中后为什么只补一个相邻块，引用需要包含什么？","scope":"retrieval","relevant_source_paths":["retrieval/citation-linking.md"]}
+{"id":"memory-workflow-human-review","query":"哪些投研场景必须要求人工审核，系统能否自动发布交易指令？","scope":"workflow","relevant_source_paths":["workflow/human-review-boundary.md"]}
+{"id":"memory-operations-context-budget","query":"上下文接近 token 预算时如何处理工具结果和历史信息？","scope":"operations","relevant_source_paths":["operations/context-budget.md"]}
+{"id":"memory-backtest-optimizer-guard","query":"回测工具报错后还能继续参数优化吗，结果应该怎样说明？","scope":"backtest","relevant_source_paths":["backtest/optimizer-guard.md"]}
+{"id":"memory-evaluation-bad-case","query":"线上 Bad Case 如何进入回归集和长期经验库？","scope":"evaluation","relevant_source_paths":["evaluation/bad-case-regression.md"]}
