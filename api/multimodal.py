@@ -25,7 +25,6 @@ api/multimodal.py
   文档：解析→分块→临时向量库→检索增强
 """
 
-import base64
 import hashlib
 import json
 import os
@@ -41,6 +40,7 @@ import re
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from db import get_conn
 from rag.news_indexer import _embed
+from api.multimodal_vision import analyze_image
 
 
 # ── 临时文档向量库（PostgreSQL + pgvector）────────────────────────────────
@@ -112,131 +112,6 @@ def cleanup_expired_sessions():
     except Exception as exc:
         print(f"[Multimodal] 清理过期临时文档失败: {exc}")
         return 0
-
-
-# ── 图片分析（Qwen-VL / DeepSeek-VL）────────────────────────────────────
-
-def analyze_image(image_bytes: bytes, image_type: str, question: str = "") -> dict:
-    """
-    用多模态LLM分析图片
-    适合：财报截图、K线图、公告截图
-
-    Args:
-        image_bytes: 图片二进制数据
-        image_type: 图片MIME类型（image/jpeg, image/png等）
-        question: 用户的具体问题
-
-    Returns:
-        {
-            "extracted_data": "提取的结构化数据",
-            "analysis": "分析结论",
-            "data_type": "financial/kline/other"
-        }
-    """
-    img_base64 = base64.b64encode(image_bytes).decode("utf-8")
-
-    # 构建提取prompt
-    extract_prompt = question or """请分析这张图片，提取所有财务和市场数据：
-
-1. 如果是财报/财务数据截图：
-   提取：净利润、营收、ROE、PE、PB、毛利率、负债率等所有数字
-   格式：指标名：数值（单位）
-
-2. 如果是K线图：
-   识别：当前价格、趋势方向、支撑位、压力位、成交量
-   识别技术形态：头肩、双顶、突破等
-
-3. 如果是公告/新闻截图：
-   提取：关键事件、数字、日期、公司名称
-
-请用结构化格式输出，便于后续分析。"""
-
-    # 尝试用 DeepSeek（通过OpenAI兼容接口）
-    # 注意：DeepSeek目前VL能力有限，优先用Qwen-VL
-    api_key = os.getenv("DASHSCOPE_API_KEY") or os.getenv("DEEPSEEK_API_KEY")
-
-    if not api_key:
-        return {
-            "extracted_data": "API Key未配置，无法分析图片",
-            "analysis": "",
-            "data_type": "unknown",
-        }
-
-    try:
-        # 优先用Qwen-VL（阿里云）
-        dashscope_key = os.getenv("DASHSCOPE_API_KEY")
-        if dashscope_key:
-            result = _analyze_with_qwen_vl(img_base64, image_type, extract_prompt, dashscope_key)
-        else:
-            # 降级用DeepSeek文字描述（不是真正的VL）
-            result = {
-                "extracted_data": "未配置DASHSCOPE_API_KEY，无法使用视觉分析",
-                "analysis": "请配置 DASHSCOPE_API_KEY 以启用图片分析功能",
-                "data_type": "unknown",
-            }
-        return result
-
-    except Exception as e:
-        return {
-            "extracted_data": f"图片分析失败: {e}",
-            "analysis": "",
-            "data_type": "unknown",
-        }
-
-
-def _analyze_with_qwen_vl(
-    img_base64: str, image_type: str, prompt: str, api_key: str
-) -> dict:
-    """用Qwen-VL分析图片"""
-    import requests as req
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-
-    payload = {
-        "model": "qwen-vl-plus",
-        "messages": [{
-            "role": "user",
-            "content": [
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:{image_type};base64,{img_base64}"
-                    }
-                },
-                {
-                    "type": "text",
-                    "text": prompt
-                }
-            ]
-        }],
-        "max_tokens": 1000,
-    }
-
-    resp = req.post(
-        "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
-        headers=headers,
-        json=payload,
-        timeout=30,
-    )
-    resp.raise_for_status()
-
-    content = resp.json()["choices"][0]["message"]["content"]
-
-    # 判断数据类型
-    data_type = "other"
-    if any(k in content for k in ["净利润", "ROE", "PE", "营收", "毛利率"]):
-        data_type = "financial"
-    elif any(k in content for k in ["K线", "均线", "成交量", "支撑", "压力"]):
-        data_type = "kline"
-
-    return {
-        "extracted_data": content,
-        "analysis": "",
-        "data_type": data_type,
-    }
 
 
 def index_image_analysis(
