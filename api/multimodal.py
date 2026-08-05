@@ -36,7 +36,6 @@ from pathlib import Path
 from typing import Optional
 import re
 
-from db import get_conn
 from rag.news_indexer import _embed
 from api.multimodal_vision import analyze_image
 from api.document_processing.chunking import (
@@ -46,6 +45,7 @@ from api.document_processing.chunking import (
     parse_heading,
 )
 from api.document_processing.parsers import parse_document_pages
+from api.document_processing import repository as document_repository
 
 
 # ── 临时文档向量库（PostgreSQL + pgvector）────────────────────────────────
@@ -66,11 +66,7 @@ _EVIDENCE_PAGE_PATTERN = re.compile(r"第\s*(\d+)\s*页")
 def cleanup_session(session_id: str):
     """清理指定 session 的临时文档，不保留本地向量库副本。"""
     try:
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("DELETE FROM uploaded_document_chunks WHERE session_id = %s", (session_id,))
-                deleted = cur.rowcount
-            conn.commit()
+        deleted = document_repository.cleanup_session(session_id)
         print(f"[Multimodal] 清理 session {session_id[:8]} 的临时文档：{deleted} 块")
     except Exception as exc:
         print(f"[Multimodal] 清理临时文档失败: {exc}")
@@ -79,15 +75,7 @@ def cleanup_session(session_id: str):
 def cleanup_document(session_id: str, document_id: str) -> int:
     """只清理会话中的一份文档，供前端移除附件时调用。"""
     try:
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "DELETE FROM uploaded_document_chunks WHERE session_id = %s AND document_id = %s",
-                    (session_id, document_id),
-                )
-                deleted = cur.rowcount
-            conn.commit()
-        return deleted
+        return document_repository.cleanup_document(session_id, document_id)
     except Exception as exc:
         print(f"[Multimodal] 清理单个临时文档失败: {exc}")
         return 0
@@ -96,16 +84,7 @@ def cleanup_document(session_id: str, document_id: str) -> int:
 def cleanup_expired_sessions():
     """清理超过 TTL 的临时文档，返回删除块数。"""
     try:
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "DELETE FROM uploaded_document_chunks "
-                    "WHERE created_at < NOW() - (%s * INTERVAL '1 hour')",
-                    (COLLECTION_TTL_HOURS,),
-                )
-                deleted = cur.rowcount
-            conn.commit()
-        return deleted
+        return document_repository.cleanup_expired(COLLECTION_TTL_HOURS)
     except Exception as exc:
         print(f"[Multimodal] 清理过期临时文档失败: {exc}")
         return 0
@@ -152,32 +131,16 @@ def index_image_analysis(
 
     try:
         embeddings = _embed([chunk["text"] for chunk in chunks])
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                # Re-uploading the same image replaces its prior extraction for this session.
-                cur.execute(
-                    "DELETE FROM uploaded_document_chunks WHERE session_id = %s AND document_id = %s",
-                    (session_id, document_id),
-                )
-                for index, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
-                    cur.execute(
-                        """
-                        INSERT INTO uploaded_document_chunks
-                            (id, session_id, filename, document_id, document_version,
-                             chunk_index, page, parent_path, previous_id, next_id,
-                             content, embedding, created_at)
-                        VALUES
-                            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s)
-                        """,
-                        (
-                            ids[index], session_id, filename, document_id, document_version,
-                            index, 0, chunk["parent_path"],
-                            ids[index - 1] if index > 0 else None,
-                            ids[index + 1] if index + 1 < len(ids) else None,
-                            chunk["text"], str(embedding), uploaded_at,
-                        ),
-                    )
-            conn.commit()
+        document_repository.replace_chunks(
+            session_id=session_id,
+            filename=filename,
+            document_id=document_id,
+            document_version=document_version,
+            ids=ids,
+            chunks=chunks,
+            embeddings=embeddings,
+            uploaded_at=uploaded_at,
+        )
     except Exception as exc:
         return {"success": False, "indexed": False, "error": f"VLM 结果写入 pgvector 失败：{exc}"}
 
@@ -238,32 +201,16 @@ def process_document(
     ids = [f"doc_{storage_id}_{i}" for i in range(len(chunks))]
     embeddings = _embed([chunk["text"] for chunk in chunks])
     try:
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                # 重传同一份文件时替换它；同一 session 的其他附件仍应可检索。
-                cur.execute(
-                    "DELETE FROM uploaded_document_chunks WHERE session_id = %s AND document_id = %s",
-                    (session_id, document_id),
-                )
-                for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
-                    cur.execute(
-                        """
-                        INSERT INTO uploaded_document_chunks
-                            (id, session_id, filename, document_id, document_version,
-                             chunk_index, page, parent_path, previous_id, next_id,
-                             content, embedding, created_at)
-                        VALUES
-                            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s)
-                        """,
-                        (
-                            ids[i], session_id, filename, document_id, document_id,
-                            i, chunk["page"], chunk["parent_path"],
-                            ids[i - 1] if i > 0 else None,
-                            ids[i + 1] if i + 1 < len(ids) else None,
-                            chunk["text"], str(embedding), uploaded_at,
-                        ),
-                    )
-            conn.commit()
+        document_repository.replace_chunks(
+            session_id=session_id,
+            filename=filename,
+            document_id=document_id,
+            document_version=document_id,
+            ids=ids,
+            chunks=chunks,
+            embeddings=embeddings,
+            uploaded_at=uploaded_at,
+        )
     except Exception as exc:
         return {"success": False, "error": f"临时文档写入 PostgreSQL 失败：{exc}"}
 
@@ -293,20 +240,7 @@ def retrieve_from_document(session_id: str, query: str, k: int = 5) -> str:
     """
     try:
         query_embedding = _embed([query])[0]
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT id, content, filename, document_version, page, parent_path,
-                           previous_id, next_id
-                    FROM uploaded_document_chunks
-                    WHERE session_id = %s
-                    ORDER BY embedding <=> %s::vector
-                    LIMIT %s
-                    """,
-                    (session_id, str(query_embedding), k),
-                )
-                rows = cur.fetchall()
+        rows = document_repository.search_chunks(session_id, query_embedding, k)
         if not rows:
             return ""
         rendered: list[str] = []
@@ -321,18 +255,7 @@ def retrieve_from_document(session_id: str, query: str, k: int = 5) -> str:
             for neighbor_id in (metadata.get("previous_id"), metadata.get("next_id")):
                 if not neighbor_id or neighbor_id in included_ids:
                     continue
-                with get_conn() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            """
-                            SELECT id, content, filename, document_version, page, parent_path,
-                                   previous_id, next_id
-                            FROM uploaded_document_chunks
-                            WHERE session_id = %s AND id = %s
-                            """,
-                            (session_id, neighbor_id),
-                        )
-                        neighbor = cur.fetchone()
+                neighbor = document_repository.get_chunk(session_id, neighbor_id)
                 if neighbor:
                     neighbor_id, neighbor_text, *neighbor_metadata_values = neighbor
                     _append_evidence(

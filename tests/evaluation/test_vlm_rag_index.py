@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from api import multimodal
+from api.document_processing import repository
 
 
 class _FakeCursor:
@@ -42,7 +43,7 @@ class VlmRagIndexTests(unittest.TestCase):
         with patch.object(
             multimodal, "_embed", side_effect=lambda texts: [[0.1] * 768 for _ in texts]
         ) as embed, patch.object(
-            multimodal, "get_conn", return_value=connection
+            repository, "get_conn", return_value=connection
         ):
             result = multimodal.index_image_analysis(
                 b"image-bytes",
