@@ -1,0 +1,9 @@
+{
+  "dataset_id": "financebench-open-source-v1",
+  "dataset_url": "https://github.com/patronus-ai/financebench",
+  "repository_commit": "cc39aeb4afdf33909ee1412188bf89035950c2eb",
+  "source_manifest": "evaluation/corpus/financebench_v1/sources.json",
+  "corpus_snapshot": "sha256:1fb291a3149c1dde1c192eb8957d93925e8bd55b2353007926f8c7c9ad6c22f9",
+  "document_count": 84,
+  "case_count": 150
+}

@@ -18,6 +18,7 @@ tmp/
 logs/
 backtest/data_cache/
 backtest/fundamental_cache/
+evaluation/corpus/downloads/
 
 # Local-only installation artifacts
 requirements_full.txt

@@ -12,7 +12,7 @@ import os
 from typing import Any, Callable
 from uuid import uuid4
 
-from control_plane.contracts import AgentEvent, AgentRunResult
+from control_plane.contracts import AgentEvent, AgentRunResult, TriggerType
 from agent_runtime.context.window import ContextWindowBuilder
 from agent_runtime.context.budget import ContextBudgetExceeded
 from agent_runtime.memory.manager import MemoryManager, NullMemoryManager
@@ -78,8 +78,21 @@ class InvestmentRuntime:
         if injected_runner:
             return self._discussion_runner(query)
         from control_plane.model_profile import model_scope
-        with model_scope(model_profile):
-            return self._discussion_runner(query)
+        try:
+            with model_scope(model_profile):
+                return self._discussion_runner(query)
+        except Exception as exc:
+            from agent_runtime.reliability import classify_model_failure
+
+            failure = classify_model_failure(exc)
+            # Discussion has no evidence contract to degrade into.  Return a
+            # stable user-facing status instead of leaking provider details or
+            # failing the whole HTTP request.
+            return (
+                "模型服务暂时不可用，当前无法可靠生成回复。"
+                "请稍后重试或改用包含股票代码的分析入口。"
+                f"（{failure.error_type.value}）"
+            )
 
     def _workflow(self) -> Callable[..., dict[str, Any]]:
         if self._workflow_runner is None:
@@ -154,28 +167,172 @@ class InvestmentRuntime:
         )
 
     def run(self, event: AgentEvent) -> AgentRunResult:
-        self._deps()
         run_id = str(uuid4())
+        from control_plane.observability import run_telemetry_scope
+
+        with run_telemetry_scope(
+            run_id,
+            query=event.content,
+            metadata={
+                "trigger": event.trigger.value,
+                "channel": event.channel,
+                "has_session_document": bool(event.session_id),
+            },
+        ) as telemetry:
+            result = self._run(event, run_id)
+        agent_trace = result.payload.get("workflow_result", {}).get("agent_trace", [])
+        metrics = telemetry.summary(agent_trace)
+        result.payload["run_metrics"] = metrics
+        result.payload["trace_summary"] = telemetry.public_summary(metrics)
+        workflow_result = result.payload.get("workflow_result")
+        if metrics.get("llm_draft_only_call_count") and isinstance(workflow_result, dict):
+            reason = "a reduced-capability backup model was used; draft requires human review"
+            workflow_result["model_degradation"] = {
+                "mode": "draft_only",
+                "call_count": metrics["llm_draft_only_call_count"],
+            }
+            workflow_result["human_review_required"] = True
+            if workflow_result.get("publish_status") != "blocked":
+                workflow_result["publish_status"] = "requires_human_review"
+            workflow_result["publish_reasons"] = list(dict.fromkeys([
+                *(workflow_result.get("publish_reasons") or []), reason,
+            ]))
+            result.payload["human_review_required"] = True
+            if result.payload.get("publish_status") != "blocked":
+                result.payload["publish_status"] = "requires_human_review"
+                result.payload["status"] = "requires_human_review"
+            result.payload["publish_reasons"] = list(dict.fromkeys([
+                *(result.payload.get("publish_reasons") or []), reason,
+            ]))
+            result.payload["model_degradation"] = workflow_result["model_degradation"]
+        # Private audit data can contain full tool artifacts.  RunStore flushes
+        # it to PostgreSQL; HTTP adapters must not return it to clients.
+        result.payload["_run_telemetry"] = telemetry.export()
+        result.trace.append({"event": "run_metrics", **metrics})
+        return result
+
+    def _run(self, event: AgentEvent, run_id: str) -> AgentRunResult:
         query = event.content.strip()
+        if event.trigger == TriggerType.HEARTBEAT:
+            return AgentRunResult(
+                run_id=run_id,
+                route="heartbeat",
+                payload={"status": "ok", "event_id": event.event_id},
+                trace=[{"event": "heartbeat", "event_id": event.event_id}],
+            )
+        self._deps()
         if not query:
             return self._direct_reply(run_id, "clarify", "请输入需要分析的股票或问题。", 4)
 
         parsed = self._intent_parser(query)
+        # Transport adapters may provide a constrained focus selection. It is
+        # accepted only from the allowlisted vocabulary, never as a free-form
+        # prompt directive. The web chat path simply does not set this field.
+        requested_focus = str(event.metadata.get("requested_focus") or "").lower()
+        if requested_focus in {"all", "technical", "fundamental", "sentiment"}:
+            parsed["analyst_focus"] = requested_focus
+        source_refresh = (
+            event.trigger == TriggerType.SOURCE_CHANGE
+            or event.metadata.get("event_type") == "source.changed"
+        )
+        if source_refresh:
+            affected_symbols = event.metadata.get("affected_symbols") or []
+            if isinstance(affected_symbols, str):
+                affected_symbols = [affected_symbols]
+            affected_symbols = [str(item).strip() for item in affected_symbols if str(item).strip()]
+            if len(affected_symbols) != 1:
+                return AgentRunResult(
+                    run_id=run_id,
+                    route="source_refresh",
+                    payload={
+                        "status": "blocked",
+                        "publish_status": "blocked",
+                        "human_review_required": True,
+                        "publish_reasons": [
+                            "source refresh requires exactly one affected stock code per run"
+                        ],
+                        "source_id": event.metadata.get("source_id"),
+                        "affected_symbols": affected_symbols,
+                    },
+                    trace=[
+                        {
+                            "event": "source_refresh_blocked",
+                            "event_id": event.event_id,
+                            "affected_symbols": affected_symbols,
+                        }
+                    ],
+                )
+            parsed["stock_code"] = affected_symbols[0]
+            parsed["intent"] = 0
+            source_type = str(event.metadata.get("source_type") or "").lower()
+            if "financial" in source_type or "report" in source_type:
+                parsed["analyst_focus"] = "fundamental"
+            elif "news" in source_type:
+                parsed["analyst_focus"] = "sentiment"
+            elif "market" in source_type or "price" in source_type:
+                parsed["analyst_focus"] = "technical"
         intent = int(parsed["intent"])
+        try:
+            from agent_runtime.planning.task_graph import TaskGraphError, build_task_dag
+
+            task_plan = build_task_dag(parsed.get("sub_intents"))
+        except TaskGraphError as exc:
+            result = self._direct_reply(
+                run_id,
+                "clarify",
+                "请求中的子任务依赖无法安全解析，请拆分后重试。",
+                4,
+            )
+            result.trace = [{
+                "event": "task_plan_rejected",
+                "event_id": event.event_id,
+                "reason": str(exc),
+            }] + result.trace
+            return result
         model_profile = str(event.metadata.get("model", "smart"))
         memory_context = self._memory.load_context(event, parsed.get("stock_code"))
         base_trace = [
-            {"event": "intent_parsed", "intent": intent, "event_id": event.event_id},
+            {
+                "event": "intent_parsed",
+                "intent": intent,
+                "event_id": event.event_id,
+                "source": parsed.get("source", "custom_parser"),
+                "confidence": parsed.get("confidence"),
+                "stock_code": parsed.get("stock_code"),
+                "analyst_focus": parsed.get("analyst_focus"),
+                "slot_sources": parsed.get("slot_sources", {}),
+                "slot_warnings": parsed.get("slot_warnings", []),
+            },
+            {
+                "event": "task_plan_compiled",
+                "task_count": len(task_plan["tasks"]),
+                "multi_intent": task_plan["multi_intent"],
+                "stages": task_plan["stages"],
+                "runnable_stages": task_plan["runnable_stages"],
+                "confirmation_required": task_plan["confirmation_required"],
+            },
             {
                 "event": "memory_context_loaded",
                 "has_session_memory": bool(memory_context.get("session")),
                 "has_preferences": bool(memory_context.get("preferences")),
             },
         ]
+        if source_refresh:
+            base_trace.append(
+                {
+                    "event": "source_change_received",
+                    "source_id": event.metadata.get("source_id"),
+                    "source_type": event.metadata.get("source_type"),
+                    "source_version": event.metadata.get("source_version"),
+                    "content_hash": event.metadata.get("content_hash"),
+                }
+            )
 
         if intent == 4:
             result = self._direct_reply(run_id, "clarify", parsed.get("reply_hint") or "请补充股票名称或代码。", intent)
             result.trace = base_trace + result.trace
+            if task_plan["multi_intent"]:
+                result.payload["task_plan"] = task_plan
             return result
         if intent == 1:
             try:
@@ -195,6 +352,8 @@ class InvestmentRuntime:
         if intent == 3:
             result = self._direct_reply(run_id, "system_action", "请通过回测、扫描或筛选入口提交对应参数。", intent)
             result.trace = base_trace + result.trace
+            if task_plan["multi_intent"]:
+                result.payload["task_plan"] = task_plan
             return result
 
         stock_code = parsed.get("stock_code")
@@ -225,35 +384,55 @@ class InvestmentRuntime:
             )
             result.trace = base_trace + [{"event": "context_budget_blocked", "profile": "research"}]
             return result
-        if use_fixed_workflow:
-            result = self._workflow()(
-                stock_code,
-                doc_context=doc_context,
-                document_citations=citations,
-                session_id=event.session_id,
-                analysis_query=query,
-                analyst_focus=parsed.get("analyst_focus") or "all",
-                memory_context=memory_context,
-                agent_context=window.text,
-                model_profile=model_profile,
-            )
-            route = "investment_workflow"
-        else:
-            from control_plane.model_profile import model_scope
+        try:
+            if use_fixed_workflow:
+                result = self._workflow()(
+                    stock_code,
+                    doc_context=doc_context,
+                    document_citations=citations,
+                    session_id=event.session_id,
+                    analysis_query=query,
+                    analyst_focus=parsed.get("analyst_focus") or "all",
+                    memory_context=memory_context,
+                    agent_context=window.text,
+                    model_profile=model_profile,
+                )
+                route = "investment_workflow"
+            else:
+                from control_plane.model_profile import model_scope
 
-            with model_scope(model_profile):
-                result = self._agent_loop()({
-                    "stock_code": stock_code,
-                    "user_doc_context": doc_context,
-                    "document_citations": citations,
-                    "session_id": event.session_id,
-                    "analysis_query": query,
-                    "analyst_focus": parsed.get("analyst_focus") or "all",
-                    "memory_context": memory_context,
-                    "agent_context": window.text,
-                    "model_profile": model_profile,
-                })
-            route = "investment_agent_loop"
+                with model_scope(model_profile):
+                    result = self._agent_loop()({
+                        "stock_code": stock_code,
+                        "user_doc_context": doc_context,
+                        "document_citations": citations,
+                        "session_id": event.session_id,
+                        "analysis_query": query,
+                        "analyst_focus": parsed.get("analyst_focus") or "all",
+                        "memory_context": memory_context,
+                        "agent_context": window.text,
+                        "model_profile": model_profile,
+                        "task_plan": task_plan,
+                    })
+                route = "investment_agent_loop"
+        except Exception as exc:
+            from agent_runtime.reliability import classify_model_failure
+
+            failure = classify_model_failure(exc)
+            route = "investment_workflow" if use_fixed_workflow else "investment_agent_loop"
+            result = {
+                "publish_status": "blocked",
+                "publish_reasons": [
+                    f"model provider unavailable: {failure.error_type.value}",
+                ],
+                "human_review_required": True,
+                "final_decision": "[PUBLISH_BLOCKED] 模型服务不可用，未生成投资结论。",
+                "agent_trace": [{
+                    "event": "model_run_blocked",
+                    "model_failure": failure.to_dict(),
+                }],
+                "model_failures": [failure.to_dict()],
+            }
         payload = {
             "role": "assistant",
             "intent": intent,
@@ -272,8 +451,29 @@ class InvestmentRuntime:
             "document_citations": result.get("document_citations", citations),
             "evidence_cards": result.get("evidence_cards", []),
             "selected_skills": skill_versions,
+            "task_status": result.get("task_status", {}),
+            # Summary only: detailed attempts and error messages stay in the
+            # private agent trace, while the run record keeps retry-budget
+            # consumption auditable without retaining raw tool payloads.
+            "reliability_summary": result.get("reliability_summary", {}),
             "workflow_result": result,
         }
+        if task_plan["multi_intent"]:
+            payload["task_plan"] = task_plan
+            payload["pending_confirmation"] = [
+                task["task_id"] for task in task_plan["tasks"]
+                if task["requires_confirmation"]
+            ]
+        if source_refresh:
+            payload.update(
+                {
+                    "source_refresh": True,
+                    "source_id": event.metadata.get("source_id"),
+                    "source_type": event.metadata.get("source_type"),
+                    "source_version": event.metadata.get("source_version"),
+                    "content_hash": event.metadata.get("content_hash"),
+                }
+            )
         self._memory.remember_run(event, parsed, result, payload["decision"], run_id)
         return AgentRunResult(
             run_id=run_id,

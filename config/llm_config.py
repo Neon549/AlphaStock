@@ -25,6 +25,10 @@ import requests as _requests
 from pathlib import Path
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
+from agent_runtime.reliability import (
+    ModelInvocationError,
+    invoke_model_with_failure_policy,
+)
 
 # This module is also imported directly by offline tests and CLI tools.  Keep
 # its startup diagnostics safe on Windows terminals configured for GBK.
@@ -37,6 +41,7 @@ load_dotenv(dotenv_path=env_path, override=True)
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
+MODEL_REQUEST_TIMEOUT_SECONDS = float(os.getenv("AGENT_MODEL_REQUEST_TIMEOUT_SECONDS", "45"))
 
 if not DEEPSEEK_API_KEY:
     raise ValueError("DEEPSEEK_API_KEY 未设置，请在 .env 文件中配置")
@@ -46,9 +51,10 @@ if not DEEPSEEK_API_KEY:
 
 LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY", "")
 LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY", "")
-LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", "http://localhost:3000")
+LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", os.getenv("LANGFUSE_BASE_URL", "http://localhost:3000"))
 
 _langfuse = None
+_langfuse_run_roots: dict[str, tuple[object, object]] = {}
 
 
 def _get_langfuse():
@@ -61,16 +67,124 @@ def _get_langfuse():
     try:
         from langfuse import Langfuse
 
-        _langfuse = Langfuse(
-            public_key=LANGFUSE_PUBLIC_KEY,
-            secret_key=LANGFUSE_SECRET_KEY,
-            host=LANGFUSE_HOST,
-        )
+        try:
+            _langfuse = Langfuse(
+                public_key=LANGFUSE_PUBLIC_KEY,
+                secret_key=LANGFUSE_SECRET_KEY,
+                host=LANGFUSE_HOST,
+            )
+        except TypeError:
+            # Current SDKs prefer base_url; keep existing v2 self-hosted envs working.
+            _langfuse = Langfuse(
+                public_key=LANGFUSE_PUBLIC_KEY,
+                secret_key=LANGFUSE_SECRET_KEY,
+                base_url=LANGFUSE_HOST,
+            )
         print(f"✅ LangFuse 已连接：{LANGFUSE_HOST}")
         return _langfuse
     except Exception as e:
         print(f"⚠️  LangFuse 初始化失败（不影响运行）: {e}")
         return None
+
+
+def _langfuse_trace(run_id: str, *, name: str, metadata: dict | None = None, input_value=None):
+    """Return a v2 trace bound to a runtime run id, without blocking the run."""
+    lf = _get_langfuse()
+    if lf is None:
+        return None
+    kwargs = {"id": run_id, "name": name}
+    if metadata:
+        kwargs["metadata"] = metadata
+    if input_value is not None:
+        kwargs["input"] = input_value
+    try:
+        return lf.trace(**kwargs)
+    except Exception as exc:
+        print(f"[LangFuse] trace creation failed (non-blocking): {exc}")
+        return None
+
+
+def _modern_root(run_id: str):
+    """Return a v3/v4 root observation, if this request uses the OTEL SDK."""
+    item = _langfuse_run_roots.get(run_id)
+    return item[1] if item else None
+
+
+def start_langfuse_run_trace(run_id: str, *, query: dict, metadata: dict | None = None) -> None:
+    """Start one root trace per request; the query is redacted by observability."""
+    lf = _get_langfuse()
+    if lf is None:
+        return
+    root_metadata = {"run_id": run_id, "kind": "research_run", **(metadata or {})}
+    # langfuse-python >=3 is OpenTelemetry based.  Holding this context open
+    # makes every generation and RAG child observation belong to one request.
+    if hasattr(lf, "start_as_current_observation"):
+        try:
+            context = lf.start_as_current_observation(
+                as_type="span",
+                name="alphastock/run",
+                input={"query": query},
+                metadata=root_metadata,
+            )
+            root = context.__enter__()
+            _langfuse_run_roots[run_id] = (context, root)
+            return
+        except Exception as exc:
+            print(f"[LangFuse] modern root trace failed (non-blocking): {exc}")
+    _langfuse_trace(
+        run_id,
+        name="alphastock/run",
+        input_value={"query": query},
+        metadata=root_metadata,
+    )
+
+
+def finish_langfuse_run_trace(run_id: str, *, summary: dict) -> None:
+    """Attach a safe operational summary to the root trace."""
+    modern = _langfuse_run_roots.pop(run_id, None)
+    if modern:
+        context, root = modern
+        try:
+            root.update(output={"trace_summary": summary})
+            context.__exit__(None, None, None)
+            _get_langfuse().flush()
+        except Exception as exc:
+            print(f"[LangFuse] modern trace completion failed (non-blocking): {exc}")
+        return
+    trace = _langfuse_trace(run_id, name="alphastock/run")
+    if trace is None:
+        return
+    try:
+        trace.update(output={"trace_summary": summary})
+        _get_langfuse().flush()
+    except Exception as exc:
+        print(f"[LangFuse] trace completion failed (non-blocking): {exc}")
+
+
+def trace_langfuse_rag_event(run_id: str, *, event: str, payload: dict) -> None:
+    """Attach retrieval/citation metadata as a child span of the root trace."""
+    root = _modern_root(run_id)
+    if root is not None:
+        try:
+            if hasattr(root, "start_observation"):
+                span = root.start_observation(name=f"rag/{event}", as_type="span", input=payload)
+            else:
+                span = root.start_span(name=f"rag/{event}", input=payload)
+            span.end()
+            _get_langfuse().flush()
+        except Exception as exc:
+            print(f"[LangFuse] modern RAG span failed (non-blocking): {exc}")
+        return
+    trace = _langfuse_trace(run_id, name="alphastock/run")
+    if trace is None:
+        return
+    try:
+        span = trace.span(name=f"rag/{event}", input=payload)
+        if hasattr(span, "end"):
+            span.end()
+        _get_langfuse().flush()
+    except Exception as exc:
+        print(f"[LangFuse] RAG span failed (non-blocking): {exc}")
 
 
 def _trace(
@@ -82,6 +196,7 @@ def _trace(
     success: bool,
     used_backup: bool = False,
     usage: dict | None = None,
+    recovery: dict | None = None,
 ):
     """上报一次 LLM 调用到 LangFuse"""
     lf = _get_langfuse()
@@ -96,17 +211,54 @@ def _trace(
         }
         if usage:
             metadata["usage"] = usage
+        if recovery:
+            metadata["recovery"] = recovery
 
-        trace = lf.trace(
-            name=f"alphastock/{name}",
+        try:
+            from control_plane.observability import current_run_id
+            run_id = current_run_id()
+        except Exception:
+            run_id = None
+        if run_id:
+            metadata["run_id"] = run_id
+
+        safe_input = _safe_trace_input(input_text)
+        root = _modern_root(run_id) if run_id else None
+        if root is not None:
+            try:
+                if hasattr(root, "start_observation"):
+                    generation = root.start_observation(
+                        name=name, as_type="generation", model=model,
+                        input=safe_input, metadata=metadata,
+                    )
+                else:
+                    generation = root.start_generation(
+                        name=name, model=model, input=safe_input, metadata=metadata,
+                    )
+                generation.update(output=output_text[:2000])
+                generation.end()
+                lf.flush()
+                return
+            except Exception as exc:
+                print(f"[LangFuse] modern generation failed (non-blocking): {exc}")
+
+        trace = _langfuse_trace(
+            run_id or f"llm-{uuid.uuid4()}",
+            name="alphastock/run" if run_id else f"alphastock/{name}",
             metadata=metadata,
         )
+        if trace is None:
+            return
         trace.generation(
             name=name,
             model=model,
-            input=input_text[:2000],  # 防止太长
+            input=safe_input,
             output=output_text[:2000],
-            metadata={"latency_ms": round(latency_ms, 1), **({"usage": usage} if usage else {})},
+            metadata={
+                "latency_ms": round(latency_ms, 1),
+                **({"usage": usage} if usage else {}),
+                **({"recovery": recovery} if recovery else {}),
+            },
         )
         lf.flush()
     except Exception as e:
@@ -123,6 +275,10 @@ def _make_deepseek(model: str, temperature: float = 0.1) -> ChatOpenAI:
         api_key=DEEPSEEK_API_KEY,
         base_url="https://api.deepseek.com",
         temperature=temperature,
+        timeout=MODEL_REQUEST_TIMEOUT_SECONDS,
+        # FallbackLLM owns the cross-provider retry budget. Disable SDK-level
+        # retries so hidden retries cannot exceed that budget or obscure trace.
+        max_retries=0,
     )
 
 
@@ -135,6 +291,8 @@ def _make_qwen(model: str, temperature: float = 0.1) -> ChatOpenAI:
         api_key=DASHSCOPE_API_KEY,
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         temperature=temperature,
+        timeout=MODEL_REQUEST_TIMEOUT_SECONDS,
+        max_retries=0,
     )
 
 
@@ -149,6 +307,15 @@ def _msg_to_str(messages) -> str:
         return str(messages)[:300]
     except Exception:
         return ""
+
+
+def _safe_trace_input(text: str) -> dict:
+    """Keep prompt telemetry useful without exporting raw user or tool context."""
+    try:
+        from control_plane.observability import redact_query
+        return redact_query(text)
+    except Exception:
+        return {"input_length": len(text)}
 
 
 def _extract_usage(result) -> dict:
@@ -181,110 +348,122 @@ def _extract_usage(result) -> dict:
     return {key: value for key, value in fields.items() if value is not None}
 
 
+def _record_run_telemetry(
+    model: str,
+    latency_ms: float,
+    success: bool,
+    used_backup: bool,
+    usage: dict | None,
+    *,
+    recovery: dict | None = None,
+) -> None:
+    """Record one provider attempt against the ContextVar-bound run, if any."""
+    try:
+        from control_plane.observability import record_llm_call
+        record_llm_call(
+            model=model,
+            latency_ms=latency_ms,
+            success=success,
+            used_backup=used_backup,
+            usage=usage,
+            recovery=recovery,
+        )
+    except Exception:
+        # Telemetry must never alter model availability.
+        return
+
+
 class FallbackLLM:
-    """
-    带自动降级 + LangFuse 追踪的 LLM 包装器
-    主力模型失败时自动切换备用模型，每次调用自动上报到 LangFuse
+    """Typed retry, circuit breaking and compatible model failover.
 
-    用法和普通LLM完全一样：
-      response = fallback_llm.invoke([HumanMessage(content="...")])
+    The wrapper only recovers transient *provider* failures.  Invalid request,
+    context and authentication failures keep their structured error so the
+    caller can compact, repair or block safely instead of hiding a bad request
+    behind a different model.  ``draft_only`` fallback is intentionally
+    observable and must still pass the downstream evidence/HITL gates.
     """
 
-    def __init__(self, primary, backup=None, name: str = "LLM"):
+    def __init__(self, primary, backup=None, name: str = "LLM", *, fallback_mode: str = "full"):
+        if fallback_mode not in {"full", "draft_only"}:
+            raise ValueError("fallback_mode must be 'full' or 'draft_only'")
         self.primary = primary
         self.backup = backup
         self.name = name
+        self.fallback_mode = fallback_mode
+
+    @staticmethod
+    def _provider_name(provider, fallback: str) -> str:
+        return str(getattr(provider, "model_name", None) or getattr(provider, "model", None) or fallback)
+
+    def _observe_attempt(self, messages, event: dict) -> None:
+        """Write every physical provider attempt without persisting prompt text."""
+        success = bool(event.get("success"))
+        failure = event.get("failure") or {}
+        result = event.get("result")
+        usage = _extract_usage(result) if success else None
+        used_backup = event.get("provider_role") == "backup"
+        recovery = {
+            "provider_role": event.get("provider_role"),
+            "attempt": event.get("attempt"),
+            "recovery_action": event.get("recovery_action"),
+            "circuit_state": event.get("circuit_state"),
+            "failure_type": failure.get("error_type"),
+            "retry_delay_seconds": event.get("retry_delay_seconds"),
+            "degradation_mode": self.fallback_mode if used_backup else "none",
+        }
+        output_text = (
+            getattr(result, "content", str(result)) if success
+            else str(failure.get("message") or "model provider failed")
+        )
+        model = str(event.get("provider_name") or self.name)
+        _trace(
+            name=self.name,
+            input_text=_msg_to_str(messages),
+            output_text=output_text,
+            model=model,
+            latency_ms=float(event.get("latency_ms") or 0.0),
+            success=success,
+            used_backup=used_backup,
+            usage=usage,
+            recovery=recovery,
+        )
+        _record_run_telemetry(
+            model,
+            float(event.get("latency_ms") or 0.0),
+            success,
+            used_backup,
+            usage,
+            recovery=recovery,
+        )
+        if success and "prompt_cache_hit_tokens" in (usage or {}):
+            print(
+                f"[{self.name}] Prompt Cache：hit={usage['prompt_cache_hit_tokens']} "
+                f"miss={usage.get('prompt_cache_miss_tokens', 'unknown')}"
+            )
+        elif not success:
+            print(
+                f"[{self.name}] {event.get('provider_role')} model failure "
+                f"({failure.get('error_type', 'UNKNOWN')}); {event.get('recovery_action')}"
+            )
 
     def invoke(self, messages, **kwargs):
-        t0 = time.time()
-        used_backup = False
-        try:
-            result = self.primary.invoke(messages, **kwargs)
-            latency = (time.time() - t0) * 1000
-            usage = _extract_usage(result)
-            if "prompt_cache_hit_tokens" in usage:
-                print(
-                    f"[{self.name}] Prompt Cache：hit={usage['prompt_cache_hit_tokens']} "
-                    f"miss={usage.get('prompt_cache_miss_tokens', 'unknown')}"
-                )
-            _trace(
-                name=self.name,
-                input_text=_msg_to_str(messages),
-                output_text=getattr(result, "content", str(result)),
-                model=getattr(self.primary, "model_name", self.name),
-                latency_ms=latency,
-                success=True,
-                usage=usage,
-            )
-            return result
-        except Exception as e:
-            if self.backup:
-                print(f"[{self.name}] 主力模型失败，切换备用: {e}")
-                used_backup = True
-                result = self.backup.invoke(messages, **kwargs)
-                latency = (time.time() - t0) * 1000
-                usage = _extract_usage(result)
-                _trace(
-                    name=self.name,
-                    input_text=_msg_to_str(messages),
-                    output_text=getattr(result, "content", str(result)),
-                    model=getattr(self.backup, "model_name", "backup"),
-                    latency_ms=latency,
-                    success=True,
-                    used_backup=True,
-                    usage=usage,
-                )
-                return result
-            latency = (time.time() - t0) * 1000
-            _trace(
-                name=self.name,
-                input_text=_msg_to_str(messages),
-                output_text=str(e),
-                model=getattr(self.primary, "model_name", self.name),
-                latency_ms=latency,
-                success=False,
-            )
-            raise
+        return invoke_model_with_failure_policy(
+            self.name,
+            lambda: self.primary.invoke(messages, **kwargs),
+            primary_name=self._provider_name(self.primary, f"{self.name}:primary"),
+            backup_invoke=(lambda: self.backup.invoke(messages, **kwargs)) if self.backup else None,
+            backup_name=self._provider_name(self.backup, f"{self.name}:backup") if self.backup else None,
+            fallback_mode=self.fallback_mode,
+            on_attempt=lambda event: self._observe_attempt(messages, event),
+        ).result
 
     async def ainvoke(self, messages, **kwargs):
-        t0 = time.time()
-        try:
-            result = await self.primary.ainvoke(messages, **kwargs)
-            latency = (time.time() - t0) * 1000
-            usage = _extract_usage(result)
-            if "prompt_cache_hit_tokens" in usage:
-                print(
-                    f"[{self.name}] Prompt Cache：hit={usage['prompt_cache_hit_tokens']} "
-                    f"miss={usage.get('prompt_cache_miss_tokens', 'unknown')}"
-                )
-            _trace(
-                name=self.name,
-                input_text=_msg_to_str(messages),
-                output_text=getattr(result, "content", str(result)),
-                model=getattr(self.primary, "model_name", self.name),
-                latency_ms=latency,
-                success=True,
-                usage=usage,
-            )
-            return result
-        except Exception as e:
-            if self.backup:
-                print(f"[{self.name}] 主力模型失败，切换备用: {e}")
-                result = await self.backup.ainvoke(messages, **kwargs)
-                latency = (time.time() - t0) * 1000
-                usage = _extract_usage(result)
-                _trace(
-                    name=self.name,
-                    input_text=_msg_to_str(messages),
-                    output_text=getattr(result, "content", str(result)),
-                    model=getattr(self.backup, "model_name", "backup"),
-                    latency_ms=latency,
-                    success=True,
-                    used_backup=True,
-                    usage=usage,
-                )
-                return result
-            raise
+        # Keep asynchronous callers on the same bounded provider policy.  The
+        # synchronous SDK method runs off the event loop, preventing an async
+        # caller from bypassing retry/circuit/audit behavior.
+        import asyncio
+
+        return await asyncio.to_thread(self.invoke, messages, **kwargs)
 
     def stream(self, messages, **kwargs):
         try:
@@ -329,6 +508,10 @@ _default_deep_llm = FallbackLLM(
     primary=_make_deepseek("deepseek-reasoner", temperature=0.1),
     backup=_make_deepseek("deepseek-chat", temperature=0.1),  # R1挂了降级V3
     name="DeepLLM",
+    # Chat is a compatible transport fallback, but it is weaker on multi-step
+    # reasoning. In AlphaStock it may produce only a governed draft, never an
+    # automatic high-risk decision.
+    fallback_mode="draft_only",
 )
 
 
@@ -340,6 +523,7 @@ _default_planner_llm = FallbackLLM(
         else _make_deepseek("deepseek-chat", temperature=0.0)
     ),
     name="PlannerLLM",
+    fallback_mode="full" if _qwen_backup else "draft_only",
 )
 
 

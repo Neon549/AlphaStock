@@ -50,7 +50,25 @@ def persist_tool_result(
             ),
             encoding="utf-8",
         )
-    return f"runtime:tool-result:{tool}:{digest}"
+    result_ref = f"runtime:tool-result:{tool}:{digest}"
+    # A run buffers artifacts in memory and flushes them to PostgreSQL only
+    # after the parent agent_run row exists.  This keeps result_ref durable
+    # without letting a tool failure become a database availability failure.
+    try:
+        from control_plane.observability import register_tool_artifact
+        register_tool_artifact(
+            result_ref,
+            {
+                "tool": tool,
+                "source_kind": source_kind,
+                "citations": citations,
+                "content": content,
+                "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            },
+        )
+    except Exception:
+        pass
+    return result_ref
 
 
 def is_context_overflow_error(exc: BaseException) -> bool:
@@ -83,6 +101,8 @@ def compact_tool_observations(
             "citations": observation.get("citations", []),
             "tool_metadata": observation.get("tool_metadata", {}),
             "freshness": observation.get("freshness", {}),
+            "tool_failure": observation.get("tool_failure"),
+            "degraded": bool(observation.get("degraded")),
             "content_ref": observation.get("result_ref") or (
                 f"tool:{observation.get('tool', 'unknown')}:"
                 f"{hashlib.sha256(content.encode('utf-8')).hexdigest()[:12]}"

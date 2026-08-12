@@ -25,7 +25,10 @@ class TriggerType(StrEnum):
     MESSAGE = "message"
     CLI = "cli"
     HTTP = "http"
+    MCP = "mcp"
     CRON = "cron"
+    SOURCE_CHANGE = "source_change"
+    HEARTBEAT = "heartbeat"
     WEBHOOK = "webhook"
     HOOK = "hook"
 

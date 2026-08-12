@@ -1,0 +1,29 @@
+{
+  "dataset_id": "a-share-heldout-public-filings-v2",
+  "purpose": "Second untouched official-disclosure corpus used to broaden held-out RAG development coverage without mutating v1.",
+  "source_policy": "Official exchange-designated disclosure hosts only. Downloaded PDFs remain local; this manifest records stable public origin and report-period metadata.",
+  "documents": [
+    {
+      "document_id": "600519-2025-annual",
+      "security_code": "600519",
+      "company": "贵州茅台",
+      "sector": "白酒",
+      "report_period": "FY2025",
+      "published_at": "2026-04-17",
+      "title": "贵州茅台酒股份有限公司2025年年度报告",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2026-04-17/1225114741.PDF"
+    },
+    {
+      "document_id": "300750-2026-q1",
+      "security_code": "300750",
+      "company": "宁德时代",
+      "sector": "动力电池与储能",
+      "report_period": "2026Q1",
+      "published_at": "2026-04-16",
+      "title": "宁德时代新能源科技股份有限公司2026年第一季度报告",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2026-04-16/1225107946.PDF"
+    }
+  ]
+}

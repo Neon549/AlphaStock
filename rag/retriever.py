@@ -9,6 +9,7 @@ truth: live AKShare news plus the bounded, persisted ``news_vectors`` index.
 from __future__ import annotations
 
 import math
+import hashlib
 from collections import defaultdict
 
 import jieba
@@ -59,12 +60,17 @@ class SimpleBM25:
 def rrf_merge(vector_ranked: list[str], bm25_ranked: list[str], k: int = 60) -> list[str]:
     """Fuse semantic and lexical rankings without manually tuned weights."""
 
+    return [document for document, _ in _rrf_ranked(vector_ranked, bm25_ranked, k=k)]
+
+
+def _rrf_ranked(vector_ranked: list[str], bm25_ranked: list[str], k: int = 60) -> list[tuple[str, float]]:
+    """Return RRF order with scores for private retrieval telemetry."""
     scores: defaultdict[str, float] = defaultdict(float)
     for rank, document in enumerate(vector_ranked):
         scores[document] += 1.0 / (rank + k)
     for rank, document in enumerate(bm25_ranked):
         scores[document] += 1.0 / (rank + k)
-    return sorted(scores, key=scores.get, reverse=True)
+    return sorted(scores.items(), key=lambda item: item[1], reverse=True)
 
 
 def _lines(value: str) -> list[str]:
@@ -105,9 +111,15 @@ def hybrid_retrieve_news(stock_code: str, query: str, top_k: int = 5) -> str:
     live_items = _lines(raw_news)
     semantic_items = _pgvector_candidates(stock_code, query, top_k)
     if not live_items and not semantic_items:
+        _record_news_retrieval(stock_code, query, top_k, [], 0, 0, rerank_applied=False)
         return "暂无可验证的相关新闻"
     if not query:
-        return "\n".join((live_items or semantic_items)[:top_k])
+        selected = (live_items or semantic_items)[:top_k]
+        _record_news_retrieval(
+            stock_code, query, top_k, [(item, None) for item in selected],
+            len(live_items), len(semantic_items), rerank_applied=False,
+        )
+        return "\n".join(selected)
 
     # pgvector results are already semantically ranked.  Add current live
     # items ranked by query overlap so fresh news is not hidden by index lag.
@@ -119,8 +131,61 @@ def hybrid_retrieve_news(stock_code: str, query: str, top_k: int = 5) -> str:
         for index, score in bm25.search(query, k=len(lexical_corpus))
         if score > 0
     ]
-    merged = rrf_merge(vector_ranked, bm25_ranked or lexical_corpus)
-    return "\n".join(merged[:top_k]) or "暂无可验证的相关新闻"
+    merged = _rrf_ranked(vector_ranked, bm25_ranked or lexical_corpus)
+    selected = merged[:top_k]
+    _record_news_retrieval(stock_code, query, top_k, selected, len(live_items), len(semantic_items), rerank_applied=True)
+    return "\n".join(item for item, _ in selected) or "暂无可验证的相关新闻"
+
+
+def _record_news_retrieval(
+    stock_code: str,
+    query: str,
+    top_k: int,
+    selected: list[tuple[str, float | None]],
+    live_candidate_count: int,
+    semantic_candidate_count: int,
+    *,
+    rerank_applied: bool,
+) -> None:
+    """Write RAG metadata only; headlines and raw query never leave the process."""
+    try:
+        from control_plane.observability import record_rag_event, redact_query
+
+        top_results = [
+            {
+                "rank": rank,
+                "news_sha256": hashlib.sha256(item.encode("utf-8")).hexdigest(),
+                "rrf_score": round(score, 8) if score is not None else None,
+            }
+            for rank, (item, score) in enumerate(selected, start=1)
+        ]
+        status = "ok" if selected else "abstained"
+        record_rag_event("retrieval", {
+            "query": redact_query(query),
+            "source_kind": "news_hybrid",
+            "status": status,
+            **({"abstain_reason": "no_retrieval_hits"} if not selected else {}),
+            "requested_top_k": top_k,
+            "retrieved_chunk_count": len(selected),
+            "top_k": top_results,
+            "corpus_snapshot": {
+                "source_kind": "news_index_and_live_feed",
+                "stock_code": stock_code,
+                "window_days": 7,
+                "live_candidate_count": live_candidate_count,
+                "semantic_candidate_count": semantic_candidate_count,
+            },
+            "rerank": {"applied": rerank_applied, "method": "rrf" if rerank_applied else None},
+        })
+        record_rag_event("citation_validation", {
+            "status": "not_applicable",
+            "validation_type": "unstructured_live_news",
+            "citation_count": 0,
+            "retrieval_status": status,
+        })
+    except Exception:
+        # News availability must not depend on observability configuration.
+        return
 
 
 @tool

@@ -28,11 +28,11 @@ def build_model_profile(name: str = "smart") -> ModelProfile:
         quick = FallbackLLM(_make_deepseek("deepseek-chat", 0.1), _qwen_backup, "QuickLLM[fast]")
         deep = FallbackLLM(_make_deepseek("deepseek-chat", 0.1), _qwen_backup, "DeepLLM[fast]")
     elif mode == "strong":
-        quick = FallbackLLM(_make_deepseek("deepseek-reasoner", 0.0), _make_deepseek("deepseek-chat", 0.0), "QuickLLM[strong]")
-        deep = FallbackLLM(_make_deepseek("deepseek-reasoner", 0.0), _make_deepseek("deepseek-chat", 0.0), "DeepLLM[strong]")
+        quick = FallbackLLM(_make_deepseek("deepseek-reasoner", 0.0), _make_deepseek("deepseek-chat", 0.0), "QuickLLM[strong]", fallback_mode="draft_only")
+        deep = FallbackLLM(_make_deepseek("deepseek-reasoner", 0.0), _make_deepseek("deepseek-chat", 0.0), "DeepLLM[strong]", fallback_mode="draft_only")
     else:
         quick = FallbackLLM(_make_deepseek("deepseek-chat", 0.1), _qwen_backup, "QuickLLM[smart]")
-        deep = FallbackLLM(_make_deepseek("deepseek-reasoner", 0.1), _make_deepseek("deepseek-chat", 0.1), "DeepLLM[smart]")
+        deep = FallbackLLM(_make_deepseek("deepseek-reasoner", 0.1), _make_deepseek("deepseek-chat", 0.1), "DeepLLM[smart]", fallback_mode="draft_only")
     # Planner is independent of the UI's fast/smart/strong profile: a wrong
     # Skill path costs more than a single stronger routing call. Qwen is
     # primary and DeepSeek Reasoner keeps an in-flight run available.
@@ -41,23 +41,28 @@ def build_model_profile(name: str = "smart") -> ModelProfile:
             _make_qwen("qwen3.7-max", 0.0),
             _make_deepseek("deepseek-reasoner", 0.0),
             f"PlannerLLM[{mode}]",
+            fallback_mode="full",
         )
     else:
         planner = FallbackLLM(
             _make_deepseek("deepseek-reasoner", 0.0),
             _make_deepseek("deepseek-chat", 0.0),
             f"PlannerLLM[{mode}]",
+            fallback_mode="draft_only",
         )
     return ModelProfile(mode, quick, deep, planner)
 
 
 @contextmanager
 def model_scope(name: str = "smart") -> Iterator[ModelProfile]:
-    token = _active_profile.set(build_model_profile(name))
-    try:
-        yield _active_profile.get()  # type: ignore[return-value]
-    finally:
-        _active_profile.reset(token)
+    from agent_runtime.reliability import model_retry_budget_scope
+
+    with model_retry_budget_scope():
+        token = _active_profile.set(build_model_profile(name))
+        try:
+            yield _active_profile.get()  # type: ignore[return-value]
+        finally:
+            _active_profile.reset(token)
 
 
 def active_model(kind: str) -> object | None:

@@ -29,3 +29,4 @@ mineru[pipeline]==3.4.4
 sentence-transformers
 langchain-text-splitters
 tushare
+mcp>=1.27,<2

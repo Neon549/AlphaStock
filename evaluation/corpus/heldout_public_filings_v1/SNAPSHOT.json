@@ -1,0 +1,51 @@
+{
+  "dataset_id": "a-share-heldout-public-filings-v1",
+  "source_manifest": "evaluation\\corpus\\heldout_public_filings_v1\\sources.json",
+  "downloaded_at": "2026-08-12T02:59:05.124634+00:00",
+  "document_count": 3,
+  "corpus_snapshot": "sha256:2148a58d30bec80a0cd809c85068b01e00c76852b55c8d62919802ecda02f70a",
+  "documents": [
+    {
+      "document_id": "600150-2026-q1",
+      "security_code": "600150",
+      "company": "中国船舶",
+      "sector": "船舶制造",
+      "report_period": "2026Q1",
+      "published_at": "2026-04-30",
+      "title": "中国船舶工业股份有限公司2026年第一季度报告",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2026-04-30/1225261166.PDF",
+      "local_path": "evaluation\\corpus\\downloads\\a-share-heldout-public-filings-v1\\600150-2026-q1.pdf",
+      "byte_size": 184454,
+      "sha256": "04d7f6734ba9fb54fccc43f43ca6ea4617b3eb3c2fd0dad339660b0413ecf7cc"
+    },
+    {
+      "document_id": "600522-2025-annual",
+      "security_code": "600522",
+      "company": "中天科技",
+      "sector": "通信与海洋能源",
+      "report_period": "FY2025",
+      "published_at": "2026-04-25",
+      "title": "江苏中天科技股份有限公司2025年年度报告",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2026-04-25/1225177318.PDF",
+      "local_path": "evaluation\\corpus\\downloads\\a-share-heldout-public-filings-v1\\600522-2025-annual.pdf",
+      "byte_size": 4306218,
+      "sha256": "27a6aaa5c560fba2bb6ba11756fce406d669752adbcf3a15d7a6282aea1cff4b"
+    },
+    {
+      "document_id": "002466-2025-h1",
+      "security_code": "002466",
+      "company": "天齐锂业",
+      "sector": "锂资源",
+      "report_period": "2025H1",
+      "published_at": "2025-08-30",
+      "title": "天齐锂业股份有限公司2025年半年度报告",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2025-08-30/1224628837.PDF",
+      "local_path": "evaluation\\corpus\\downloads\\a-share-heldout-public-filings-v1\\002466-2025-h1.pdf",
+      "byte_size": 4766833,
+      "sha256": "374e64f8626e69e46564c7b65f40e1c08f07c9ee10040c2a1dfabf26571c00bf"
+    }
+  ]
+}

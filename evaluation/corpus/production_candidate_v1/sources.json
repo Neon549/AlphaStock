@@ -1,0 +1,117 @@
+{
+  "dataset_id": "a-share-public-filings-candidate-v1",
+  "purpose": "Candidate public document corpus for human-reviewed AlphaStock RAG evaluation. It is not a production-tier Golden Set until pages and labels are reviewed.",
+  "source_policy": "Official exchange-designated disclosure hosts only. Downloaded PDFs remain local; this manifest records stable public origin and report-period metadata.",
+  "documents": [
+    {
+      "document_id": "600519-2024-annual",
+      "security_code": "600519",
+      "company": "贵州茅台",
+      "sector": "消费",
+      "report_period": "FY2024",
+      "published_at": "2025-04-03",
+      "title": "贵州茅台酒股份有限公司2024年年度报告",
+      "source_host": "cninfo",
+      "source_url": "https://dataclouds.cninfo.com.cn/shgonggao/2025/2025-04-03/74014e840fc311f08a18fa163e957f7a.pdf"
+    },
+    {
+      "document_id": "300750-2025-annual",
+      "security_code": "300750",
+      "company": "宁德时代",
+      "sector": "新能源电池",
+      "report_period": "FY2025",
+      "published_at": "2026-03-10",
+      "title": "宁德时代新能源科技股份有限公司2025年年度报告全文",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2026-03-10/1225002214.PDF"
+    },
+    {
+      "document_id": "000001-2024-annual",
+      "security_code": "000001",
+      "company": "平安银行",
+      "sector": "银行",
+      "report_period": "FY2024",
+      "published_at": "2025-03-15",
+      "title": "平安银行股份有限公司2024年年度报告",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2025-03-15/1222806505.PDF"
+    },
+    {
+      "document_id": "000001-2025-annual",
+      "security_code": "000001",
+      "company": "平安银行",
+      "sector": "银行",
+      "report_period": "FY2025",
+      "published_at": "2026-03-21",
+      "title": "平安银行股份有限公司2025年年度报告",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2026-03-21/1225022887.PDF"
+    },
+    {
+      "document_id": "002594-2024-annual",
+      "security_code": "002594",
+      "company": "比亚迪",
+      "sector": "新能源汽车",
+      "report_period": "FY2024",
+      "published_at": "2025-03-25",
+      "title": "比亚迪股份有限公司2024年年度报告全文",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2025-03-25/1222881496.PDF"
+    },
+    {
+      "document_id": "002371-2024-annual",
+      "security_code": "002371",
+      "company": "北方华创",
+      "sector": "半导体设备",
+      "report_period": "FY2024",
+      "published_at": "2025-04-26",
+      "title": "北方华创科技集团股份有限公司2024年年度报告全文",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2025-04-26/1223309278.PDF"
+    },
+    {
+      "document_id": "601012-2024-annual",
+      "security_code": "601012",
+      "company": "隆基绿能",
+      "sector": "光伏",
+      "report_period": "FY2024",
+      "published_at": "2025-05-07",
+      "title": "隆基绿能科技股份有限公司2024年年度报告",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2025-05-07/1223477802.PDF"
+    },
+    {
+      "document_id": "002415-2024-annual",
+      "security_code": "002415",
+      "company": "海康威视",
+      "sector": "智能物联",
+      "report_period": "FY2024",
+      "published_at": "2025-04-19",
+      "title": "杭州海康威视数字技术股份有限公司2024年年度报告",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2025-04-19/1223153152.PDF"
+    },
+    {
+      "document_id": "002714-2024-annual",
+      "security_code": "002714",
+      "company": "牧原股份",
+      "sector": "农业养殖",
+      "report_period": "FY2024",
+      "published_at": "2025-03-20",
+      "title": "牧原食品股份有限公司2024年年度报告全文",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2025-03-20/1222845025.PDF"
+    },
+    {
+      "document_id": "000333-2025-annual",
+      "security_code": "000333",
+      "company": "美的集团",
+      "sector": "家电制造",
+      "report_period": "FY2025",
+      "published_at": "2026-03-31",
+      "title": "美的集团股份有限公司2025年年度报告全文",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2026-03-31/1225065145.PDF"
+    }
+  ]
+}

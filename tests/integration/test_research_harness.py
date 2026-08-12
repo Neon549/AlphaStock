@@ -1,3 +1,4 @@
+import os
 import unittest
 from unittest.mock import patch
 
@@ -15,6 +16,14 @@ class _SequenceLlm:
 
     def invoke(self, _prompt):
         return _Response(next(self.outputs))
+
+
+class _FailingLlm:
+    def __init__(self, error):
+        self.error = error
+
+    def invoke(self, _prompt):
+        raise self.error
 
 
 class _OverflowThenResponse:
@@ -121,6 +130,64 @@ class ResearchHarnessTests(unittest.TestCase):
         self.assertEqual(planner.calls, 2)
         self.assertEqual(result["trace"][0]["event"], "reactive_compact_retry")
         self.assertEqual(result["report"], "safe final")
+
+    def test_harness_records_a_typed_deterministic_tool_failure_without_retrying(self):
+        planner = _SequenceLlm([
+            '{"action":"tool","tool":"market-price","arguments":{},"reason":"verify"}',
+            '{"action":"final","reason":"cannot repair server-bound code"}',
+        ])
+        final = _SequenceLlm(["safe final with evidence gap"])
+        calls = []
+
+        def execute(name, **kwargs):
+            calls.append(name)
+            return {"ok": False, "content": "[TOOL_ERROR] missing stock code"}
+
+        result = run_research_harness(
+            stock_code="600519", snapshot={}, planner_llm=planner,
+            final_llm=final, tool_executor=execute,
+        )
+
+        self.assertEqual(calls, ["market-price"])
+        self.assertEqual(result["trace"][0]["tool_failure"]["error_type"], "INVALID_ARGUMENT")
+        self.assertEqual(result["trace"][0]["tool_failure"]["next_action"], "repair_parameters_or_ask_user")
+        self.assertEqual(result["trace"][0]["attempts"], 1)
+
+    def test_harness_retries_a_transient_tool_failure_within_the_run_budget(self):
+        planner = _SequenceLlm([
+            '{"action":"tool","tool":"market-price","arguments":{},"reason":"verify"}',
+            '{"action":"final","reason":"retrieved"}',
+        ])
+        final = _SequenceLlm(["safe final"])
+        calls = []
+
+        def execute(name, **kwargs):
+            calls.append(name)
+            if len(calls) == 1:
+                raise TimeoutError("read timed out")
+            return {"ok": True, "content": "retrieved_at=2026-08-11T09:00:00+10:00"}
+
+        with patch.dict(os.environ, {"AGENT_TOOL_INITIAL_BACKOFF_SECONDS": "0"}):
+            result = run_research_harness(
+                stock_code="600519", snapshot={}, planner_llm=planner,
+                final_llm=final, tool_executor=execute,
+            )
+
+        self.assertEqual(calls, ["market-price", "market-price"])
+        self.assertEqual(result["trace"][0]["attempts"], 2)
+        self.assertEqual(result["trace"][0]["retry_trace"][0]["failure"]["error_type"], "TIMEOUT")
+
+    def test_harness_converts_model_unavailability_to_a_safe_research_abort(self):
+        result = run_research_harness(
+            stock_code="600519",
+            snapshot={},
+            planner_llm=_FailingLlm(ConnectionError("model service unavailable")),
+            final_llm=_SequenceLlm(["not reached"]),
+        )
+
+        self.assertTrue(result["report"].startswith("[RESEARCH_ABORT]"))
+        self.assertEqual(result["model_failures"][0]["error_type"], "UPSTREAM_UNAVAILABLE")
+        self.assertEqual(result["trace"][0]["event"], "model_unavailable")
 
     @patch("agent_runtime.memory.index.search_memory")
     def test_default_memory_tool_marks_guidance_as_non_market_evidence(self, search_memory):

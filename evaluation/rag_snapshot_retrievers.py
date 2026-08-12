@@ -5,13 +5,17 @@ from __future__ import annotations
 import json
 import math
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any, Callable
+
+import jieba
 
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CORPUS = ROOT / "evaluation" / "fixtures" / "rag_corpus_v1.jsonl"
 _TOKEN = re.compile(r"[a-z0-9.]+", re.I)
+_CHINESE_FRAGMENT = re.compile(r"[\u4e00-\u9fff]+")
 
 
 def load_snapshot(path: Path = DEFAULT_CORPUS) -> list[dict[str, Any]]:
@@ -21,6 +25,7 @@ def load_snapshot(path: Path = DEFAULT_CORPUS) -> list[dict[str, Any]]:
 def build_bm25_retriever(corpus: list[dict[str, Any]]) -> Callable[..., list[dict[str, Any]]]:
     """A dependency-free BM25 adapter used only for fixed Golden Set scoring."""
     tokenized = [_tokens(item["content"]) for item in corpus]
+    term_frequencies = [Counter(document) for document in tokenized]
     document_frequency: dict[str, int] = {}
     for document in tokenized:
         for token in set(document):
@@ -28,10 +33,10 @@ def build_bm25_retriever(corpus: list[dict[str, Any]]) -> Callable[..., list[dic
     average_length = sum(len(item) for item in tokenized) / max(len(tokenized), 1)
 
     def retrieve(query: str, *, top_k: int) -> list[dict[str, Any]]:
-        terms = _tokens(query)
+        terms = set(_tokens(query))
         scores: list[tuple[float, int]] = []
         for index, document in enumerate(tokenized):
-            term_frequency = {term: document.count(term) for term in set(document)}
+            term_frequency = term_frequencies[index]
             score = 0.0
             for term in terms:
                 frequency = term_frequency.get(term, 0)
@@ -46,13 +51,16 @@ def build_bm25_retriever(corpus: list[dict[str, Any]]) -> Callable[..., list[dic
 
 
 def build_dense_retriever(
-    corpus: list[dict[str, Any]], embedding: Callable[[list[str]], list[list[float]]]
+    corpus: list[dict[str, Any]],
+    embedding: Callable[[list[str]], list[list[float]]],
+    query_embedding: Callable[[list[str]], list[list[float]]] | None = None,
 ) -> Callable[..., list[dict[str, Any]]]:
     """Cosine dense adapter; embedding is injected to keep unit tests offline."""
     vectors = embedding([item["content"] for item in corpus])
+    encode_query = query_embedding or embedding
 
     def retrieve(query: str, *, top_k: int) -> list[dict[str, Any]]:
-        query_vector = embedding([query])[0]
+        query_vector = encode_query([query])[0]
         return _ranked(corpus, [(_cosine(query_vector, vector), index) for index, vector in enumerate(vectors)], top_k)
 
     return retrieve
@@ -81,7 +89,12 @@ def build_hybrid_rrf_retriever(
 
 
 def _tokens(text: str) -> list[str]:
-    return _TOKEN.findall(text.lower())
+    """Tokenise Latin/numeric terms and Chinese text for a real BM25 baseline."""
+
+    tokens = _TOKEN.findall(text.lower())
+    for fragment in _CHINESE_FRAGMENT.findall(text):
+        tokens.extend(token for token in jieba.lcut(fragment) if token.strip())
+    return tokens
 
 
 def _ranked(

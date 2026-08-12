@@ -207,6 +207,35 @@ CREATE TABLE IF NOT EXISTS agent_events (
 CREATE INDEX IF NOT EXISTS idx_agent_events_session_received
     ON agent_events (session_id, received_at DESC);
 
+-- Event-driven external data sources.  A source revision is deduplicated by
+-- dedupe_key so Cron retries and provider Webhook retries are safe across
+-- process restarts.
+CREATE TABLE IF NOT EXISTS agent_sources (
+    source_id          TEXT PRIMARY KEY,
+    source_type        TEXT NOT NULL,
+    entity_key         TEXT,
+    endpoint           TEXT,
+    enabled            BOOLEAN NOT NULL DEFAULT TRUE,
+    metadata           JSONB NOT NULL DEFAULT '{}'::jsonb,
+    last_version       TEXT,
+    last_content_hash  TEXT,
+    last_observed_at   TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_agent_sources_type_enabled
+    ON agent_sources (source_type, enabled);
+
+CREATE TABLE IF NOT EXISTS agent_source_changes (
+    event_id       TEXT PRIMARY KEY,
+    source_id      TEXT NOT NULL REFERENCES agent_sources(source_id) ON DELETE CASCADE,
+    dedupe_key     TEXT NOT NULL UNIQUE,
+    source_version TEXT,
+    content_hash   TEXT,
+    payload        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    observed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_agent_source_changes_source_observed
+    ON agent_source_changes (source_id, observed_at DESC);
+
 CREATE TABLE IF NOT EXISTS agent_runs (
     run_id       TEXT PRIMARY KEY,
     event_id     TEXT NOT NULL REFERENCES agent_events(event_id),
@@ -231,7 +260,109 @@ CREATE TABLE IF NOT EXISTS agent_steps (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_steps_run ON agent_steps (run_id, step_index);
 
+-- Per-call model telemetry is buffered during execution and flushed only after
+-- the parent run exists, so it remains joinable by run_id without provider-side
+-- credentials or prompt text in the application database.
+CREATE TABLE IF NOT EXISTS agent_run_llm_calls (
+    id              BIGSERIAL PRIMARY KEY,
+    run_id          TEXT NOT NULL REFERENCES agent_runs(run_id) ON DELETE CASCADE,
+    call_index      INTEGER NOT NULL,
+    model           TEXT NOT NULL,
+    latency_ms      DOUBLE PRECISION NOT NULL,
+    success         BOOLEAN NOT NULL,
+    used_backup     BOOLEAN NOT NULL DEFAULT FALSE,
+    input_tokens    INTEGER,
+    output_tokens   INTEGER,
+    total_tokens    INTEGER,
+    cache_hit_tokens INTEGER,
+    cache_miss_tokens INTEGER,
+    provider_role   TEXT,
+    failure_type    TEXT,
+    recovery_action TEXT,
+    retry_delay_seconds DOUBLE PRECISION,
+    circuit_state   TEXT,
+    degradation_mode TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (run_id, call_index)
+);
+CREATE INDEX IF NOT EXISTS idx_run_llm_calls_run ON agent_run_llm_calls (run_id, call_index);
+-- Existing local databases predate model-failure telemetry.  Keep the schema
+-- migration additive so audit availability never depends on manual cleanup.
+ALTER TABLE agent_run_llm_calls ADD COLUMN IF NOT EXISTS provider_role TEXT;
+ALTER TABLE agent_run_llm_calls ADD COLUMN IF NOT EXISTS failure_type TEXT;
+ALTER TABLE agent_run_llm_calls ADD COLUMN IF NOT EXISTS recovery_action TEXT;
+ALTER TABLE agent_run_llm_calls ADD COLUMN IF NOT EXISTS retry_delay_seconds DOUBLE PRECISION;
+ALTER TABLE agent_run_llm_calls ADD COLUMN IF NOT EXISTS circuit_state TEXT;
+ALTER TABLE agent_run_llm_calls ADD COLUMN IF NOT EXISTS degradation_mode TEXT;
+
+-- Tool payloads are durable evidence artifacts.  The cache file remains a
+-- local debugging convenience, but result_ref resolves from PostgreSQL too.
+CREATE TABLE IF NOT EXISTS agent_tool_results (
+    result_ref      TEXT PRIMARY KEY,
+    tool            TEXT NOT NULL,
+    source_kind     TEXT NOT NULL,
+    citations       JSONB NOT NULL DEFAULT '[]'::jsonb,
+    content         TEXT NOT NULL,
+    content_sha256  TEXT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS agent_run_tool_results (
+    run_id          TEXT NOT NULL REFERENCES agent_runs(run_id) ON DELETE CASCADE,
+    result_ref      TEXT NOT NULL REFERENCES agent_tool_results(result_ref),
+    PRIMARY KEY (run_id, result_ref)
+);
+
 -- ── Agent memory (separate from raw chat logs and evidence/RAG) ──────
+-- Learning artifacts remain downstream of the online run. A trajectory is
+-- never exported as SFT/DPO data until a human reviewer explicitly approves
+-- and labels it.
+CREATE TABLE IF NOT EXISTS agent_run_evaluations (
+    run_id          TEXT PRIMARY KEY REFERENCES agent_runs(run_id) ON DELETE CASCADE,
+    schema_version  TEXT NOT NULL,
+    outcome         TEXT NOT NULL CHECK (outcome IN ('passed', 'safe_blocked', 'failed')),
+    score           DOUBLE PRECISION NOT NULL,
+    rubric_results  JSONB NOT NULL DEFAULT '[]'::jsonb,
+    badcase_types   JSONB NOT NULL DEFAULT '[]'::jsonb,
+    summary         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_agent_run_evaluations_outcome_created
+    ON agent_run_evaluations (outcome, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS agent_badcases (
+    badcase_id      TEXT PRIMARY KEY,
+    run_id          TEXT NOT NULL REFERENCES agent_runs(run_id) ON DELETE CASCADE,
+    category        TEXT NOT NULL,
+    severity        TEXT NOT NULL CHECK (severity IN ('low', 'medium', 'high')),
+    status          TEXT NOT NULL CHECK (status IN ('open', 'triaged', 'resolved', 'ignored')),
+    fingerprint     TEXT NOT NULL,
+    detail          JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    reviewed_at     TIMESTAMPTZ,
+    reviewer        TEXT,
+    UNIQUE (run_id, category)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_badcases_status_created
+    ON agent_badcases (status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_badcases_fingerprint
+    ON agent_badcases (fingerprint, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS agent_training_candidates (
+    candidate_id    TEXT PRIMARY KEY,
+    run_id          TEXT NOT NULL UNIQUE REFERENCES agent_runs(run_id) ON DELETE CASCADE,
+    candidate_type  TEXT NOT NULL CHECK (candidate_type IN ('trajectory', 'sft', 'dpo')),
+    status          TEXT NOT NULL CHECK (status IN ('pending_review', 'approved', 'rejected', 'exported')),
+    sample          JSONB NOT NULL DEFAULT '{}'::jsonb,
+    evaluation      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    reviewer        TEXT,
+    review_note     TEXT,
+    reviewed_at     TIMESTAMPTZ,
+    exported_at     TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_agent_training_candidates_status_created
+    ON agent_training_candidates (status, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS agent_session_memory (
     session_id TEXT PRIMARY KEY,
     actor_id   TEXT,

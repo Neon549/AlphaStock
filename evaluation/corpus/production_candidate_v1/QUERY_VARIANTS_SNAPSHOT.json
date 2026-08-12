@@ -1,0 +1,8 @@
+{
+  "dataset_id": "public-filings-query-robustness-candidate-v1",
+  "tier": "synthetic_candidate_pending_human_review",
+  "row_count": 88,
+  "sha256": "24a4a12dc9cc35ba903b0a1f7543008e600e7c7642a1769bdf00c1311cb11174",
+  "generator": "evaluation.build_rag_query_variants",
+  "warning": "Template-generated robustness traffic is not a real-user test distribution or resume metric."
+}

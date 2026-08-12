@@ -1,0 +1,77 @@
+{
+  "dataset_id": "external-cfqa-source-mapping-v1",
+  "purpose": "Official annual-report sources for the first page-anchored CFQA mapping batch.",
+  "source_policy": "Only official exchange, CNINFO, or issuer PDF hosts are accepted. A document is eligible for Evidence mapping only after download hash and PDF page count are recorded.",
+  "documents": [
+    {
+      "document_id": "300793-2022-annual",
+      "security_code": "300793",
+      "company": "佳禾智能",
+      "report_period": "FY2022",
+      "published_at": "2023-04-27",
+      "title": "佳禾智能科技股份有限公司2022年年度报告全文",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2023-04-27/1216618531.PDF"
+    },
+    {
+      "document_id": "603077-2022-annual",
+      "security_code": "603077",
+      "company": "和邦生物",
+      "report_period": "FY2022",
+      "published_at": "2023-02-21",
+      "title": "四川和邦生物科技股份有限公司2022年年度报告全文",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2023-02-21/1215907004.PDF"
+    },
+    {
+      "document_id": "688608-2020-annual",
+      "security_code": "688608",
+      "company": "恒玄科技",
+      "report_period": "FY2020",
+      "published_at": "2021-04-27",
+      "title": "恒玄科技（上海）股份有限公司2020年年度报告",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2021-04-27/1209820693.PDF"
+    },
+    {
+      "document_id": "002727-2022-annual",
+      "security_code": "002727",
+      "company": "一心堂",
+      "report_period": "FY2022",
+      "published_at": "2023-04-21",
+      "title": "一心堂药业集团股份有限公司2022年年度报告全文",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2023-04-21/1216487652.PDF"
+    },
+    {
+      "document_id": "603806-2020-annual",
+      "security_code": "603806",
+      "company": "福斯特",
+      "report_period": "FY2020",
+      "published_at": "2021-03-26",
+      "title": "杭州福斯特应用材料股份有限公司2020年年度报告",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2021-03-26/1209453735.PDF"
+    },
+    {
+      "document_id": "600496-2022-annual",
+      "security_code": "600496",
+      "company": "精工钢构",
+      "report_period": "FY2022",
+      "published_at": "2023-04-18",
+      "title": "长江精工钢结构（集团）股份有限公司2022年年度报告",
+      "source_host": "issuer",
+      "source_url": "https://www.600496.com/upload/files/202304/20230428174711tqp8.PDF"
+    },
+    {
+      "document_id": "688366-2020-annual",
+      "security_code": "688366",
+      "company": "昊海生科",
+      "report_period": "FY2020",
+      "published_at": "2021-03-27",
+      "title": "上海昊海生物科技股份有限公司2020年年度报告",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2021-03-27/1209464806.PDF"
+    }
+  ]
+}
