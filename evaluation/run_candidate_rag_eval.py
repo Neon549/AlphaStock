@@ -38,6 +38,14 @@ EMBEDDING_BACKENDS = {
     "bge_m3": {
         "model": "BAAI/bge-m3",
         "query_instruction": "",
+        "batch_size": 16,
+    },
+    "bge_small_en_v1_5": {
+        # FinanceBench questions and SEC filings are English. This compact
+        # model makes its external-benchmark Dense/RRF run practical on CPU.
+        "model": "BAAI/bge-small-en-v1.5",
+        "query_instruction": "Represent this sentence for searching relevant passages: ",
+        "batch_size": 128,
     },
 }
 FACT_CONTEXT_ALIASES = {
@@ -211,12 +219,13 @@ def load_local_embedding_backend(name: str):
     config = EMBEDDING_BACKENDS[name]
     model_id = str(config["model"])
     query_instruction = str(config["query_instruction"])
+    batch_size = int(config.get("batch_size", 32))
     from sentence_transformers import SentenceTransformer
 
     model = SentenceTransformer(model_id, local_files_only=True)
 
     def encode(texts: list[str]) -> list[list[float]]:
-        return model.encode(texts, normalize_embeddings=True, show_progress_bar=False).tolist()
+        return model.encode(texts, normalize_embeddings=True, show_progress_bar=False, batch_size=batch_size).tolist()
 
     def encode_query(texts: list[str]) -> list[list[float]]:
         prepared = [f"{query_instruction}{text}" for text in texts] if query_instruction else texts
@@ -226,10 +235,11 @@ def load_local_embedding_backend(name: str):
         model_id,
         query_instruction=query_instruction,
         dimension=int(model.get_embedding_dimension()),
+        batch_size=batch_size,
     )
 
 
-def embedding_runtime_metadata(model_id: str, *, query_instruction: str, dimension: int) -> dict[str, Any]:
+def embedding_runtime_metadata(model_id: str, *, query_instruction: str, dimension: int, batch_size: int = 32) -> dict[str, Any]:
     cache_root = _model_cache_root(model_id)
     ref = cache_root / "refs" / "main"
     return {
@@ -241,6 +251,7 @@ def embedding_runtime_metadata(model_id: str, *, query_instruction: str, dimensi
         "network_policy": "HF_HUB_OFFLINE=1",
         "query_instruction": query_instruction,
         "dimension": dimension,
+        "batch_size": batch_size,
     }
 
 

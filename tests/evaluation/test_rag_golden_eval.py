@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 from evaluation.rag_golden_eval import bootstrap_mean_interval, citation_matches, evaluate_answer_governance, evaluate_retrieval_cases
-from evaluation.rag_snapshot_retrievers import _tokens, build_bm25_retriever, build_dense_retriever, build_hybrid_rrf_retriever
+from evaluation.rag_snapshot_retrievers import _tokens, build_bm25_retriever, build_dense_retriever, build_dense_retriever_from_vectors, build_hybrid_rrf_retriever
 
 
 class RagGoldenEvalTests(unittest.TestCase):
@@ -36,6 +36,17 @@ class RagGoldenEvalTests(unittest.TestCase):
         self.assertEqual(result["uncertainty"]["recall_at_3"]["cases"], 1)
         self.assertIn("unclassified", result["breakdown_by_source_type"])
 
+    def test_page_backlink_scores_a_retrieved_child_chunk_against_page_gold(self):
+        retriever = lambda _query, *, top_k: [{
+            "evidence_id": "annual:p32:c2", "page_evidence_id": "evidence:p32",
+            "filename": "annual.md", "page": 32, "section": "Cash Flow",
+        }]
+
+        result = evaluate_retrieval_cases(self.cases, retriever, k=1)
+
+        self.assertEqual(result["recall_at_1"], 1.0)
+        self.assertEqual(result["details"][0]["result_ids"], ["evidence:p32"])
+
     def test_bootstrap_interval_is_reproducible_and_contains_observed_mean(self):
         result = bootstrap_mean_interval([0.0, 1.0, 1.0], samples=100, seed=7)
 
@@ -63,6 +74,18 @@ class RagGoldenEvalTests(unittest.TestCase):
         self.assertEqual(bm25("cash flow", top_k=1)[0]["evidence_id"], "cash")
         self.assertEqual(dense("cash flow", top_k=1)[0]["evidence_id"], "cash")
         self.assertEqual(hybrid("cash flow", top_k=1)[0]["page"], 32)
+
+    def test_precomputed_dense_vectors_match_direct_encoding(self):
+        corpus = [
+            {"evidence_id": "cash", "content": "cash flow"},
+            {"evidence_id": "revenue", "content": "revenue"},
+        ]
+        embedding = lambda texts: [[1.0, 0.0] if "cash" in text else [0.0, 1.0] for text in texts]
+
+        direct = build_dense_retriever(corpus, embedding)
+        cached = build_dense_retriever_from_vectors(corpus, embedding([item["content"] for item in corpus]), embedding)
+
+        self.assertEqual(cached("cash flow", top_k=2), direct("cash flow", top_k=2))
 
     def test_bm25_tokenizer_keeps_chinese_terms_and_stock_codes(self):
         tokens = _tokens("贵州茅台 600519 营业收入")

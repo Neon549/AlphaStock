@@ -57,10 +57,25 @@ def build_dense_retriever(
 ) -> Callable[..., list[dict[str, Any]]]:
     """Cosine dense adapter; embedding is injected to keep unit tests offline."""
     vectors = embedding([item["content"] for item in corpus])
-    encode_query = query_embedding or embedding
+    return build_dense_retriever_from_vectors(corpus, vectors, query_embedding or embedding)
+
+
+def build_dense_retriever_from_vectors(
+    corpus: list[dict[str, Any]],
+    vectors: list[list[float]],
+    query_embedding: Callable[[list[str]], list[list[float]]],
+) -> Callable[..., list[dict[str, Any]]]:
+    """Build a dense retriever from vectors precomputed for ``corpus``.
+
+    Multiple evaluation scopes can share a snapshot's vectors without changing
+    rankings, avoiding redundant local model inference.
+    """
+
+    if len(corpus) != len(vectors):
+        raise ValueError("dense vectors must align one-to-one with the corpus")
 
     def retrieve(query: str, *, top_k: int) -> list[dict[str, Any]]:
-        query_vector = encode_query([query])[0]
+        query_vector = query_embedding([query])[0]
         return _ranked(corpus, [(_cosine(query_vector, vector), index) for index, vector in enumerate(vectors)], top_k)
 
     return retrieve

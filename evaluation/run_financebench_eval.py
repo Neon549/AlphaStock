@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from evaluation.rag_golden_eval import evaluate_retrieval_cases, load_cases
-from evaluation.run_candidate_rag_eval import build_scoped_bm25_retriever, load_candidate_corpus, load_local_embedding_backend
-from evaluation.rag_snapshot_retrievers import build_bm25_retriever, build_dense_retriever, build_hybrid_rrf_retriever
+from evaluation.run_candidate_rag_eval import EMBEDDING_BACKENDS, build_scoped_bm25_retriever, load_candidate_corpus, load_local_embedding_backend
+from evaluation.rag_snapshot_retrievers import build_bm25_retriever, build_dense_retriever_from_vectors, build_hybrid_rrf_retriever
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -49,14 +49,18 @@ def _evaluate_gold_document_scope(
     corpus: list[dict[str, Any]],
     *,
     k: int,
-    document_embedding=None,
     query_embedding=None,
+    document_vectors: list[list[float]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     by_document: dict[str, list[dict[str, Any]]] = {}
     for item in corpus:
         by_document.setdefault(str(item["document_id"]), []).append(item)
     methods: dict[str, list[dict[str, Any]]] = {"bm25_gold_document_scoped": []}
-    if document_embedding:
+    vectors_by_evidence_id = {
+        str(item["evidence_id"]): vector
+        for item, vector in zip(corpus, document_vectors or [])
+    }
+    if document_vectors:
         methods["dense_bge_m3_gold_document_scoped"] = []
         methods["hybrid_rrf_bge_m3_gold_document_scoped"] = []
     cases_by_document: dict[str, list[dict[str, Any]]] = {}
@@ -69,8 +73,9 @@ def _evaluate_gold_document_scope(
             raise ValueError(f"FinanceBench cases have no corpus document {document_id}")
         bm25 = build_bm25_retriever(scoped)
         methods["bm25_gold_document_scoped"].extend(evaluate_retrieval_cases(document_cases, bm25, k=k)["details"])
-        if document_embedding:
-            dense = build_dense_retriever(scoped, document_embedding, query_embedding)
+        if document_vectors:
+            scoped_vectors = [vectors_by_evidence_id[str(item["evidence_id"])] for item in scoped]
+            dense = build_dense_retriever_from_vectors(scoped, scoped_vectors, query_embedding)
             hybrid = build_hybrid_rrf_retriever(scoped, bm25, dense)
             methods["dense_bge_m3_gold_document_scoped"].extend(evaluate_retrieval_cases(document_cases, dense, k=k)["details"])
             methods["hybrid_rrf_bge_m3_gold_document_scoped"].extend(evaluate_retrieval_cases(document_cases, hybrid, k=k)["details"])
@@ -92,14 +97,25 @@ def run(
         "bm25_entity_period_scoped": build_scoped_bm25_retriever(corpus),
     }
     document_embedding = query_embedding = embedding_runtime = None
+    document_vectors = None
     if embedding_model:
         document_embedding, query_embedding, embedding_runtime = load_local_embedding_backend(embedding_model)
+        # Gold-document scope changes candidates, not source text. Encode each
+        # page and query once, then reuse the vectors for every document scope.
+        document_vectors = document_embedding([str(item["content"]) for item in corpus])
+        query_values = [str(case["query"]) for case in cases]
+        query_vector_by_text = dict(zip(query_values, query_embedding(query_values)))
+
+        def cached_query_embedding(texts: list[str]) -> list[list[float]]:
+            return [query_vector_by_text[text] for text in texts]
+
+        query_embedding = cached_query_embedding
     gold_document_results = _evaluate_gold_document_scope(
         cases,
         corpus,
         k=k,
-        document_embedding=document_embedding,
         query_embedding=query_embedding,
+        document_vectors=document_vectors,
     )
     return {
         "dataset_id": "financebench-open-source-v1",
@@ -125,7 +141,7 @@ def main() -> int:
     parser.add_argument("--chunks", type=Path, default=DEFAULT_CHUNKS)
     parser.add_argument("--source-manifest", type=Path, default=DEFAULT_SOURCE_MANIFEST)
     parser.add_argument("--k", type=int, default=10)
-    parser.add_argument("--embedding-model", choices=("bge_m3",), help="Optional local dense/RRF benchmark for the Gold-document-scoped protocol.")
+    parser.add_argument("--embedding-model", choices=tuple(EMBEDDING_BACKENDS), help="Optional local dense/RRF benchmark for the Gold-document-scoped protocol.")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     report = run(args.cases, args.chunks, args.source_manifest, k=args.k, embedding_model=args.embedding_model)

@@ -134,9 +134,12 @@ def evaluate_retrieval_cases(
         abstain_allowed = bool(expected.get("abstain_allowed", False))
         required_citations = expected.get("required_citations", [])
         results = retriever(case["query"], top_k=k)
-        ids = [item.get("evidence_id") for item in results]
+        # A retriever can rank smaller chunks while the benchmark annotation
+        # remains page-level. ``page_evidence_id`` provides that stable
+        # backlink; existing corpora without it retain their evidence ID.
+        ids = [str(item.get("page_evidence_id") or item.get("evidence_id")) for item in results]
         rank = next((index + 1 for index, value in enumerate(ids) if value in relevant), None)
-        relevant_retrieved = sum(value in relevant for value in ids)
+        relevant_retrieved = len({value for value in ids if value in relevant})
         abstain_retrieval_ok = not ids if not relevant and abstain_allowed else None
         gains = [1 if value in relevant else 0 for value in ids]
         dcg = sum(gain / math.log2(index + 2) for index, gain in enumerate(gains))

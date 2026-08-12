@@ -179,10 +179,26 @@ python -m evaluation.run_financebench_eval ^
   --out runtime/reports/financebench-v1.retrieval.json
 ```
 
-The current reproducible baseline is Recall@10 13.67% for global BM25 and
-23.67% after deterministic company/report-period scoping, with MRR 0.1480 and
-NDCG@10 0.1668 for the scoped retriever. These are external benchmark
-retrieval results, not online-user accuracy. The source benchmark and its
+For a more realistic RAG index, split long PDF pages into short retrievable
+chunks while preserving the original Gold-page backlink, then run the same
+page-level protocol:
+
+```bash
+python -m evaluation.build_financebench_chunks ^
+  --out runtime/reports/financebench-v1.chunks-1200.jsonl
+python -m evaluation.run_financebench_eval ^
+  --chunks runtime/reports/financebench-v1.chunks-1200.jsonl ^
+  --out runtime/reports/financebench-v1.chunks-1200.bm25.json
+```
+
+The original page baseline is Recall@10 13.67% for global BM25 and 23.67%
+after deterministic company/report-period scoping. On the 1,200-character
+page-citable chunks, those same retrievers reached 14.33% and 26.00%; scoped
+Recall@100 was 53.78%, which identifies ranking (rather than candidate
+discovery alone) as the next bottleneck. An optional CPU-feasible English
+Dense/RRF run uses `--embedding-model bge_small_en_v1_5`; `bge_m3` remains the
+multilingual reference model for a GPU-capable runner. These are external
+benchmark retrieval results, not online-user accuracy. The source benchmark and its
 annotation fields are documented in the [FinanceBench repository](https://github.com/patronus-ai/financebench).
 See [external benchmark reporting and resume wording](datasets/EXTERNAL_BENCHMARK_CLAIMS.md)
 for the exact claim boundaries and current protocol-specific numbers.
