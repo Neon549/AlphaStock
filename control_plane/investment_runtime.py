@@ -154,8 +154,26 @@ class InvestmentRuntime:
         )
 
     def run(self, event: AgentEvent) -> AgentRunResult:
-        self._deps()
         run_id = str(uuid4())
+        from control_plane.observability import run_telemetry_scope
+        with run_telemetry_scope(
+            run_id, query=event.content,
+            metadata={"trigger": event.trigger.value, "channel": event.channel},
+        ) as telemetry:
+            result = self._run(event, run_id)
+        summary = telemetry.summary()
+        result.payload["run_metrics"] = summary
+        result.payload["trace_summary"] = {
+            key: summary[key] for key in (
+                "run_id", "elapsed_ms", "retrieval_count", "retrieved_chunk_count",
+                "citation_count", "citation_validation_status", "abstained", "model_status",
+            )
+        }
+        result.trace.append({"event": "run_metrics", **summary})
+        return result
+
+    def _run(self, event: AgentEvent, run_id: str) -> AgentRunResult:
+        self._deps()
         query = event.content.strip()
         if not query:
             return self._direct_reply(run_id, "clarify", "请输入需要分析的股票或问题。", 4)

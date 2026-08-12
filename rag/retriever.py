@@ -9,6 +9,7 @@ truth: live AKShare news plus the bounded, persisted ``news_vectors`` index.
 from __future__ import annotations
 
 import math
+import hashlib
 from collections import defaultdict
 
 import jieba
@@ -105,9 +106,12 @@ def hybrid_retrieve_news(stock_code: str, query: str, top_k: int = 5) -> str:
     live_items = _lines(raw_news)
     semantic_items = _pgvector_candidates(stock_code, query, top_k)
     if not live_items and not semantic_items:
+        _record_news_trace(stock_code, query, [], False, 0, 0)
         return "暂无可验证的相关新闻"
     if not query:
-        return "\n".join((live_items or semantic_items)[:top_k])
+        selected = (live_items or semantic_items)[:top_k]
+        _record_news_trace(stock_code, query, selected, False, len(live_items), len(semantic_items))
+        return "\n".join(selected)
 
     # pgvector results are already semantically ranked.  Add current live
     # items ranked by query overlap so fresh news is not hidden by index lag.
@@ -120,7 +124,25 @@ def hybrid_retrieve_news(stock_code: str, query: str, top_k: int = 5) -> str:
         if score > 0
     ]
     merged = rrf_merge(vector_ranked, bm25_ranked or lexical_corpus)
+    _record_news_trace(stock_code, query, merged[:top_k], True, len(live_items), len(semantic_items))
     return "\n".join(merged[:top_k]) or "暂无可验证的相关新闻"
+
+
+def _record_news_trace(stock_code: str, query: str, items: list[str], reranked: bool, live_count: int, semantic_count: int) -> None:
+    """Record only headline hashes; live news text never enters telemetry."""
+    try:
+        from control_plane.observability import record_rag_event, redact_query
+        status = "ok" if items else "abstained"
+        record_rag_event("retrieval", {
+            "query": redact_query(query), "source_kind": "news_hybrid", "status": status,
+            "retrieved_chunk_count": len(items),
+            "top_k": [{"rank": i + 1, "news_sha256": hashlib.sha256(item.encode()).hexdigest()} for i, item in enumerate(items)],
+            "corpus_snapshot": {"source_kind": "news_index_and_live_feed", "stock_code": stock_code, "live_candidate_count": live_count, "semantic_candidate_count": semantic_count},
+            "rerank": {"applied": reranked, "method": "rrf" if reranked else None},
+        })
+        record_rag_event("citation_validation", {"status": "not_applicable", "citation_count": 0, "validation_type": "unstructured_live_news"})
+    except Exception:
+        return
 
 
 @tool

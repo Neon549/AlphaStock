@@ -46,9 +46,10 @@ if not DEEPSEEK_API_KEY:
 
 LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY", "")
 LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY", "")
-LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", "http://localhost:3000")
+LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", os.getenv("LANGFUSE_BASE_URL", "http://localhost:3000"))
 
 _langfuse = None
+_run_roots: dict[str, tuple[object, object]] = {}
 
 
 def _get_langfuse():
@@ -61,16 +62,54 @@ def _get_langfuse():
     try:
         from langfuse import Langfuse
 
-        _langfuse = Langfuse(
-            public_key=LANGFUSE_PUBLIC_KEY,
-            secret_key=LANGFUSE_SECRET_KEY,
-            host=LANGFUSE_HOST,
-        )
+        try:
+            _langfuse = Langfuse(public_key=LANGFUSE_PUBLIC_KEY, secret_key=LANGFUSE_SECRET_KEY, host=LANGFUSE_HOST)
+        except TypeError:
+            _langfuse = Langfuse(public_key=LANGFUSE_PUBLIC_KEY, secret_key=LANGFUSE_SECRET_KEY, base_url=LANGFUSE_HOST)
         print(f"✅ LangFuse 已连接：{LANGFUSE_HOST}")
         return _langfuse
     except Exception as e:
         print(f"⚠️  LangFuse 初始化失败（不影响运行）: {e}")
         return None
+
+
+def start_langfuse_run_trace(run_id: str, *, query: dict, metadata: dict) -> None:
+    lf = _get_langfuse()
+    if lf is None:
+        return
+    if hasattr(lf, "start_as_current_observation"):
+        context = lf.start_as_current_observation(as_type="span", name="alphastock/run", input={"query": query}, metadata={"run_id": run_id, **metadata})
+        _run_roots[run_id] = (context, context.__enter__())
+    else:
+        lf.trace(id=run_id, name="alphastock/run", input={"query": query}, metadata={"run_id": run_id, **metadata})
+
+
+def finish_langfuse_run_trace(run_id: str, *, summary: dict) -> None:
+    lf = _get_langfuse()
+    if lf is None:
+        return
+    root = _run_roots.pop(run_id, None)
+    if root:
+        context, span = root
+        span.update(output={"trace_summary": summary})
+        context.__exit__(None, None, None)
+    else:
+        trace = lf.trace(id=run_id, name="alphastock/run")
+        trace.update(output={"trace_summary": summary})
+    lf.flush()
+
+
+def trace_langfuse_rag_event(run_id: str, *, event: str, payload: dict) -> None:
+    lf = _get_langfuse()
+    if lf is None:
+        return
+    root = _run_roots.get(run_id)
+    if root:
+        span = root[1].start_observation(name=f"rag/{event}", as_type="span", input=payload) if hasattr(root[1], "start_observation") else root[1].start_span(name=f"rag/{event}", input=payload)
+    else:
+        span = lf.trace(id=run_id, name="alphastock/run").span(name=f"rag/{event}", input=payload)
+    span.end()
+    lf.flush()
 
 
 def _trace(
@@ -96,15 +135,26 @@ def _trace(
         }
         if usage:
             metadata["usage"] = usage
+        try:
+            from control_plane.observability import current_run_id, record_llm_call, redact_query
+            run_id = current_run_id()
+            record_llm_call(model=model, latency_ms=latency_ms, success=success, used_backup=used_backup, usage=usage)
+            safe_input = redact_query(input_text)
+        except Exception:
+            run_id, safe_input = None, {"input_length": len(input_text)}
 
-        trace = lf.trace(
-            name=f"alphastock/{name}",
-            metadata=metadata,
-        )
+        if run_id in _run_roots:
+            root = _run_roots[run_id][1]
+            generation = root.start_observation(name=name, as_type="generation", model=model, input=safe_input, metadata=metadata) if hasattr(root, "start_observation") else root.start_generation(name=name, model=model, input=safe_input, metadata=metadata)
+            generation.update(output=output_text[:2000])
+            generation.end()
+            lf.flush()
+            return
+        trace = lf.trace(id=run_id, name="alphastock/run" if run_id else f"alphastock/{name}", metadata=metadata)
         trace.generation(
             name=name,
             model=model,
-            input=input_text[:2000],  # 防止太长
+            input=safe_input,
             output=output_text[:2000],
             metadata={"latency_ms": round(latency_ms, 1), **({"usage": usage} if usage else {})},
         )

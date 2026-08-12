@@ -47,6 +47,26 @@ def retrieve_document_context(session_id: str, query: str, k: int = 5) -> str:
         return ""
 
 
+def retrieve_document_evidence(session_id: str, query: str, k: int = 5) -> tuple[str, list[dict], dict]:
+    """Retrieve evidence plus IDs, versions and distances for private telemetry."""
+    try:
+        rows = repository.search_chunks(session_id, _embed([query])[0], k)
+        if not rows:
+            return "", [], {"status": "abstained", "retrieved_chunk_count": 0, "top_k": [], "corpus_snapshot": {"source_kind": "session_upload", "document_count": 0}, "rerank": {"applied": False}}
+        rendered, included, top_k, documents = [], set(), [], {}
+        for row in rows:
+            chunk_id, chunk, *values = row
+            metadata = _row_metadata(values)
+            distance = metadata.pop("distance", None)
+            top_k.append({"rank": len(top_k) + 1, "evidence_id": str(chunk_id), "filename": metadata["filename"], "document_version": metadata["document_version"], "page": metadata["page"], "distance": round(float(distance), 6) if distance is not None else None})
+            documents[(metadata["filename"], metadata["document_version"])] = {"filename": metadata["filename"], "document_version": metadata["document_version"]}
+            _append_evidence(rendered, included, chunk_id, chunk, metadata, "retrieval_hit")
+        context = "\n\n".join(rendered)
+        return context, extract_document_citations(context), {"status": "ok", "retrieved_chunk_count": len(top_k), "retrieved_evidence_ids": sorted(included), "top_k": top_k, "corpus_snapshot": {"source_kind": "session_upload", "document_count": len(documents), "documents": list(documents.values())}, "rerank": {"applied": False, "reason": "not_configured"}}
+    except Exception:
+        return "", [], {"status": "abstained", "retrieved_chunk_count": 0, "top_k": [], "corpus_snapshot": {"source_kind": "session_upload", "document_count": 0}, "rerank": {"applied": False}}
+
+
 def extract_document_citations(document_evidence: str) -> list[dict]:
     """Convert evidence headers into frontend-safe citation metadata."""
     citations: list[dict] = []
@@ -74,8 +94,8 @@ def extract_document_citations(document_evidence: str) -> list[dict]:
 
 
 def _row_metadata(values: list) -> dict:
-    filename, document_version, page, parent_path, previous_id, next_id = values
-    return {
+    filename, document_version, page, parent_path, previous_id, next_id = values[:6]
+    metadata = {
         "filename": filename,
         "document_version": document_version,
         "page": page,
@@ -83,6 +103,9 @@ def _row_metadata(values: list) -> dict:
         "previous_id": previous_id,
         "next_id": next_id,
     }
+    if len(values) > 6:
+        metadata["distance"] = values[6]
+    return metadata
 
 
 def _append_evidence(

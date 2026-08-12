@@ -133,7 +133,7 @@ Evaluated with **RAGAS 0.1.21** using Qwen as the Judge LLM (switched from DeepS
 
 Development follows **EDD (Evaluation-Driven Development)**: every retrieval or prompt change runs `evaluation/evaluator.py` before merging.
 
-Online monitoring via LangFuse full-chain tracing. Alerting threshold: Faithfulness < 0.85 triggers review.
+Online monitoring uses one Langfuse trace per request. It records a redacted query fingerprint, corpus snapshot, top-k distances, rerank state, citation validation, abstention, token usage and latency. Public responses return only `run_id`, answer/citations and a safe `trace_summary`; detailed evidence remains in Langfuse. Alerting threshold: Faithfulness < 0.85 triggers review.
 
 ---
 
@@ -156,6 +156,7 @@ TUSHARE_TOKEN=your_token
 POSTGRES_DSN=postgresql://user:password@localhost:5432/alphastock
 LANGFUSE_PUBLIC_KEY=your_key
 LANGFUSE_SECRET_KEY=your_key
+LANGFUSE_BASE_URL=https://cloud.langfuse.com  # optional; LANGFUSE_HOST remains supported
 ```
 
 ```bash

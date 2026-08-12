@@ -37,6 +37,7 @@ class AnalyzeRequest(BaseModel):
 
 
 class AnalyzeResponse(BaseModel):
+    run_id: str
     stock_code: str
     decision: str
     fundamental_report: str
@@ -49,6 +50,7 @@ class AnalyzeResponse(BaseModel):
     publish_reasons: list[str] = []
     document_citations: list[dict] = []
     evidence_cards: list[dict] = []
+    trace_summary: dict = {}
 
 
 class ChatRequest(BaseModel):
@@ -171,9 +173,7 @@ def chat(
                 body_token=request.auth_token, x_auth_token=x_auth_token, authorization=authorization
             ),
         )
-    payload["run_id"] = run.run_id
-    payload["route"] = run.route
-    return payload
+    return {"run_id": run.run_id, "answer": payload.get("content") or payload.get("decision", ""), "citations": payload.get("document_citations", []), "trace_summary": payload.get("trace_summary", {})}
 
 
 @router.post("/analyze", response_model=AnalyzeResponse)
@@ -218,6 +218,7 @@ def analyze_stock(
             ),
         )
         return AnalyzeResponse(
+            run_id=run.run_id,
             stock_code=stock_code,
             decision=payload.get("decision", ""),
             fundamental_report=payload.get("fundamental_report", ""),
@@ -230,6 +231,7 @@ def analyze_stock(
             review_id=review_id,
             document_citations=payload.get("document_citations", []),
             evidence_cards=payload.get("evidence_cards", []),
+            trace_summary=payload.get("trace_summary", {}),
         )
     except HTTPException:
         raise
