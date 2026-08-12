@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 from evaluation.rag_golden_eval import bootstrap_mean_interval, citation_matches, evaluate_answer_governance, evaluate_retrieval_cases
-from evaluation.rag_snapshot_retrievers import _tokens, build_bm25_retriever, build_dense_retriever, build_dense_retriever_from_vectors, build_hybrid_rrf_retriever
+from evaluation.rag_snapshot_retrievers import _tokens, build_bm25_retriever, build_dense_retriever, build_dense_retriever_from_vectors, build_hybrid_rrf_retriever, build_reranked_retriever
 
 
 class RagGoldenEvalTests(unittest.TestCase):
@@ -86,6 +86,15 @@ class RagGoldenEvalTests(unittest.TestCase):
         cached = build_dense_retriever_from_vectors(corpus, embedding([item["content"] for item in corpus]), embedding)
 
         self.assertEqual(cached("cash flow", top_k=2), direct("cash flow", top_k=2))
+
+    def test_reranker_reorders_a_bounded_candidate_pool(self):
+        candidate = lambda _query, *, top_k: [
+            {"evidence_id": "first", "content": "wrong"},
+            {"evidence_id": "second", "content": "right"},
+        ][:top_k]
+        reranked = build_reranked_retriever(candidate, lambda _query, passages: [0.1 if text == "wrong" else 0.9 for text in passages])
+
+        self.assertEqual(reranked("query", top_k=1)[0]["evidence_id"], "second")
 
     def test_bm25_tokenizer_keeps_chinese_terms_and_stock_codes(self):
         tokens = _tokens("贵州茅台 600519 营业收入")

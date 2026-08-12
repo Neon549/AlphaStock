@@ -103,6 +103,28 @@ def build_hybrid_rrf_retriever(
     return retrieve
 
 
+def build_reranked_retriever(
+    candidate_retriever: Callable[..., list[dict[str, Any]]],
+    reranker: Callable[[str, list[str]], list[float]],
+    *,
+    candidate_k: int = 100,
+) -> Callable[..., list[dict[str, Any]]]:
+    """Rerank a bounded first-stage candidate pool with a cross-encoder."""
+
+    def retrieve(query: str, *, top_k: int) -> list[dict[str, Any]]:
+        candidates = candidate_retriever(query, top_k=max(top_k, candidate_k))
+        if not candidates:
+            return []
+        scores = reranker(query, [str(item["content"]) for item in candidates])
+        ranked = sorted(
+            zip(candidates, scores),
+            key=lambda item: (-float(item[1]), str(item[0]["evidence_id"])),
+        )[:top_k]
+        return [{**item, "score": float(score)} for item, score in ranked]
+
+    return retrieve
+
+
 def _tokens(text: str) -> list[str]:
     """Tokenise Latin/numeric terms and Chinese text for a real BM25 baseline."""
 
