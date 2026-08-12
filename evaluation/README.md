@@ -203,6 +203,39 @@ annotation fields are documented in the [FinanceBench repository](https://github
 See [external benchmark reporting and resume wording](datasets/EXTERNAL_BENCHMARK_CLAIMS.md)
 for the exact claim boundaries and current protocol-specific numbers.
 
+## End-to-end answer evaluation
+
+`run_rag_e2e_eval` evaluates the complete path: query -> retrieval -> answer
+generation -> benchmark answer judge -> citation grounding. It intentionally
+does not call retrieval Recall or RAGAS Faithfulness "answer accuracy".
+
+Example on the public FinanceBench sample:
+
+```powershell
+$env:HF_HUB_OFFLINE = "1"
+python -m evaluation.run_rag_e2e_eval `
+  --k 20 `
+  --retriever bm25_entity_period_scoped_reranked `
+  --generator configured_llm `
+  --judge configured_llm `
+  --progress runtime/reports/financebench-v1.e2e.progress.json `
+  --out runtime/reports/financebench-v1.e2e.json
+```
+
+The report separates:
+
+* `answer_accuracy`: benchmark judge says the generated answer is materially correct;
+* `grounded_answer_accuracy`: answer is correct, required citations are present,
+  and cited pages were actually retrieved;
+* `retrieval_hit_rate_at_k`: labelled evidence was retrieved, independent of
+  whether the model answered correctly.
+
+The configured judge is an automated LLM judge. It is suitable for a
+reproducible engineering benchmark, but it is not a claim that every generated
+answer was independently human-reviewed. The public FinanceBench references
+and evidence annotations are human-annotated; the AlphaStock answer outputs
+remain machine-judged unless a separate human audit is performed.
+
 ### Real user-query intake is not only RAG
 
 The initial 13 manual expert queries are recorded in
