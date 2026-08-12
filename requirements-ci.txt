@@ -2,6 +2,8 @@
 # embedding model runtime stay in requirements.txt because CI only tests their
 # adapters; it neither parses PDFs nor loads a vector model.
 fastapi
+pytest
+PyMuPDF
 langchain
 langchain-community
 langchain-openai
