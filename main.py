@@ -32,8 +32,35 @@ app.add_middleware(
     allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "X-Auth-Token", "Idempotency-Key"],
+    allow_headers=[
+        "Content-Type", "Authorization", "X-Auth-Token", "Idempotency-Key",
+        "Last-Event-ID", "Mcp-Method", "Mcp-Name", "Mcp-Protocol-Version", "Mcp-Session-Id",
+    ],
+    expose_headers=["Mcp-Session-Id"],
 )
+
+# The MCP server is an ASGI sub-application. Business modules are not loaded
+# here: the remote adapter imports the Gateway lazily only when a bounded tool
+# is invoked. ``streamable_http_path='/'`` makes the mounted URL itself the
+# protocol endpoint: /api/v1/mcp.
+from agent_runtime.mcp.server import mcp_asgi_app, mcp_server
+app.mount("/api/v1/mcp", mcp_asgi_app)
+
+
+@app.on_event("startup")
+async def start_mcp_session_manager():
+    """Mounted Starlette apps do not run their own lifespan automatically."""
+
+    manager = mcp_server.session_manager.run()
+    await manager.__aenter__()
+    app.state.mcp_session_manager = manager
+
+
+@app.on_event("shutdown")
+async def stop_mcp_session_manager():
+    manager = getattr(app.state, "mcp_session_manager", None)
+    if manager is not None:
+        await manager.__aexit__(None, None, None)
 
 
 @app.middleware("http")

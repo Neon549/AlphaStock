@@ -73,13 +73,13 @@ def search_chunks(session_id: str, query_embedding, limit: int) -> list:
             cur.execute(
                 """
                 SELECT id, content, filename, document_version, page, parent_path,
-                       previous_id, next_id
+                       previous_id, next_id, embedding <=> %s::vector AS distance
                 FROM uploaded_document_chunks
                 WHERE session_id = %s
                 ORDER BY embedding <=> %s::vector
                 LIMIT %s
                 """,
-                (session_id, str(query_embedding), limit),
+                (str(query_embedding), session_id, str(query_embedding), limit),
             )
             return cur.fetchall()
 

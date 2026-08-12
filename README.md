@@ -112,6 +112,18 @@ Intent routing uses three layers: deterministic rules first, then a high-confide
 
 Each skill is registered by `agent_runtime/skills/<skill>/skill.json` with a name, description, trigger, required permissions, semantic version and prompt files. The registry creates a content hash from the manifest and prompt references, so any rule change produces a new traceable `version_id`. `/chat` and `/analyze` permission-filter candidates before asking the LLM to choose from their descriptions; invalid LLM output falls back to deterministic triggers. `document-rag` is a read-only skill (`document:read`) with an isolated handler that retrieves pgvector evidence and page citations. Inspect active metadata through `GET /api/v1/skills`.
 
+### Remote MCP
+
+The application also exposes a guarded Streamable HTTP MCP endpoint at
+`/api/v1/mcp/`. It maps approved external tool calls into the same Gateway and
+Python Runtime used by the web API; it does not give an MCP client direct
+database, filesystem, publishing or trading access. The initial tool set is
+limited to stock-research drafts, bounded historical backtests, strategy
+methodology lookup and human-owned document retrieval. See
+[`MCP_REMOTE.md`](MCP_REMOTE.md) for scopes, deployment variables and an
+end-to-end smoke client. The current server accepts Bearer-capable MCP clients;
+first-class Claude remote connector support remains a separate OAuth task.
+
 ### Graceful Degradation
 - DeepSeek failure → auto-switch to Qwen
 - TechLens offline → auto-switch to DeepSeek for technical analysis
@@ -133,7 +145,7 @@ Evaluated with **RAGAS 0.1.21** using Qwen as the Judge LLM (switched from DeepS
 
 Development follows **EDD (Evaluation-Driven Development)**: every retrieval or prompt change runs `evaluation/evaluator.py` before merging.
 
-Online monitoring via LangFuse full-chain tracing. Alerting threshold: Faithfulness < 0.85 triggers review.
+Online monitoring uses one Langfuse trace per request. It records a redacted query fingerprint, corpus snapshot, top-k distances, rerank state, citation structural validation, abstention, token usage and latency. Public API responses expose only `run_id`, answer/citations and a safe `trace_summary`; prompts and detailed evidence remain in the private audit/Langfuse view. Alerting threshold: Faithfulness < 0.85 triggers review.
 
 ---
 
@@ -156,6 +168,7 @@ TUSHARE_TOKEN=your_token
 POSTGRES_DSN=postgresql://user:password@localhost:5432/alphastock
 LANGFUSE_PUBLIC_KEY=your_key
 LANGFUSE_SECRET_KEY=your_key
+LANGFUSE_BASE_URL=https://cloud.langfuse.com  # optional; self-hosted deployments may use LANGFUSE_HOST
 ```
 
 ```bash

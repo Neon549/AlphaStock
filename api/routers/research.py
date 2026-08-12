@@ -34,9 +34,11 @@ class AnalyzeRequest(BaseModel):
     model: str = "smart"
     session_id: Optional[str] = None
     auth_token: Optional[str] = None
+    learning_capture: bool = False
 
 
 class AnalyzeResponse(BaseModel):
+    run_id: str
     stock_code: str
     decision: str
     fundamental_report: str
@@ -49,6 +51,7 @@ class AnalyzeResponse(BaseModel):
     publish_reasons: list[str] = []
     document_citations: list[dict] = []
     evidence_cards: list[dict] = []
+    trace_summary: dict = {}
 
 
 class ChatRequest(BaseModel):
@@ -56,6 +59,7 @@ class ChatRequest(BaseModel):
     model: str = "smart"
     session_id: Optional[str] = None
     auth_token: Optional[str] = None
+    learning_capture: bool = False
 
 
 class WebhookRequest(BaseModel):
@@ -154,7 +158,10 @@ def chat(
         "session_id": request.session_id,
         "actor_id": actor_id,
         "channel": "web",
-        "metadata": {"model": request.model or "smart"},
+        "metadata": {
+            "model": request.model or "smart",
+            "learning_capture": bool(request.learning_capture),
+        },
     }
     event_id = _event_id("chat", request.session_id, actor_id, idempotency_key)
     if event_id:
@@ -163,6 +170,7 @@ def chat(
     if run.route == "duplicate":
         raise HTTPException(status_code=409, detail="duplicate request is already recorded; retry without reusing the key after checking run status")
     payload = dict(run.payload)
+    payload.pop("_run_telemetry", None)
     workflow_result = payload.pop("workflow_result", None)
     if workflow_result is not None:
         payload["review_id"] = _create_publication_review(
@@ -171,9 +179,14 @@ def chat(
                 body_token=request.auth_token, x_auth_token=x_auth_token, authorization=authorization
             ),
         )
-    payload["run_id"] = run.run_id
-    payload["route"] = run.route
-    return payload
+    # Chat exposes a stable, privacy-safe RAG envelope.  Detailed tool payloads,
+    # provider attempts and raw telemetry remain in the private audit store.
+    return {
+        "run_id": run.run_id,
+        "answer": payload.get("content") or payload.get("decision", ""),
+        "citations": payload.get("document_citations", []),
+        "trace_summary": payload.get("trace_summary", {}),
+    }
 
 
 @router.post("/analyze", response_model=AnalyzeResponse)
@@ -199,7 +212,11 @@ def analyze_stock(
             "session_id": request.session_id,
             "actor_id": actor_id,
             "channel": "web",
-            "metadata": {"operation": "analyze", "model": request.model or "smart"},
+            "metadata": {
+                "operation": "analyze",
+                "model": request.model or "smart",
+                "learning_capture": bool(request.learning_capture),
+            },
         }
         event_id = _event_id("analyze", request.session_id, actor_id, idempotency_key)
         if event_id:
@@ -208,6 +225,7 @@ def analyze_stock(
         if run.route == "duplicate":
             raise HTTPException(status_code=409, detail="duplicate request is already recorded; retry without reusing the key after checking run status")
         payload = dict(run.payload)
+        payload.pop("_run_telemetry", None)
         workflow_result = payload.pop("workflow_result", None)
         if workflow_result is None:
             raise HTTPException(status_code=400, detail=payload.get("content", "无法启动股票分析"))
@@ -218,6 +236,7 @@ def analyze_stock(
             ),
         )
         return AnalyzeResponse(
+            run_id=run.run_id,
             stock_code=stock_code,
             decision=payload.get("decision", ""),
             fundamental_report=payload.get("fundamental_report", ""),
@@ -230,6 +249,7 @@ def analyze_stock(
             review_id=review_id,
             document_citations=payload.get("document_citations", []),
             evidence_cards=payload.get("evidence_cards", []),
+            trace_summary=payload.get("trace_summary", {}),
         )
     except HTTPException:
         raise

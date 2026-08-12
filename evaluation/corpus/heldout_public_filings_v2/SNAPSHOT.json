@@ -1,0 +1,37 @@
+{
+  "dataset_id": "a-share-heldout-public-filings-v2",
+  "source_manifest": "evaluation\\corpus\\heldout_public_filings_v2\\sources.json",
+  "downloaded_at": "2026-08-12T03:18:21.899464+00:00",
+  "document_count": 2,
+  "corpus_snapshot": "sha256:f84d10bd7bc5ed3164909da02ff341909cbadec87ff8305ebbe433376fa3a4c5",
+  "documents": [
+    {
+      "document_id": "600519-2025-annual",
+      "security_code": "600519",
+      "company": "贵州茅台",
+      "sector": "白酒",
+      "report_period": "FY2025",
+      "published_at": "2026-04-17",
+      "title": "贵州茅台酒股份有限公司2025年年度报告",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2026-04-17/1225114741.PDF",
+      "local_path": "evaluation\\corpus\\downloads\\a-share-heldout-public-filings-v2\\600519-2025-annual.pdf",
+      "byte_size": 1082847,
+      "sha256": "474905deeaf0f875fc0a1b097a626c0c7852c427faadc5d7fc7816cbf45ea288"
+    },
+    {
+      "document_id": "300750-2026-q1",
+      "security_code": "300750",
+      "company": "宁德时代",
+      "sector": "动力电池与储能",
+      "report_period": "2026Q1",
+      "published_at": "2026-04-16",
+      "title": "宁德时代新能源科技股份有限公司2026年第一季度报告",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2026-04-16/1225107946.PDF",
+      "local_path": "evaluation\\corpus\\downloads\\a-share-heldout-public-filings-v2\\300750-2026-q1.pdf",
+      "byte_size": 537170,
+      "sha256": "32e4936e6dd68a89741a8167b4c4ae3f8b4bc7ef61d70f35b294e1cb0e46fbe8"
+    }
+  ]
+}

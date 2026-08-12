@@ -54,6 +54,7 @@ class ControlPlaneTests(unittest.TestCase):
                 "publish_status": "requires_human_review",
                 "final_decision": "draft",
                 "agent_trace": [],
+                "reliability_summary": {"retries_used": 1, "retry_delay_seconds": 0.25},
             }
 
         runtime = InvestmentRuntime(
@@ -69,6 +70,81 @@ class ControlPlaneTests(unittest.TestCase):
         result = runtime.run(AgentEvent(TriggerType.MESSAGE, "分析茅台"))
         self.assertEqual(result.route, "investment_agent_loop")
         self.assertEqual(calls[0]["stock_code"], "600519")
+        self.assertEqual(result.payload["reliability_summary"]["retries_used"], 1)
+
+    def test_runtime_compiles_and_passes_a_multi_intent_task_plan_to_the_harness(self):
+        calls = []
+
+        def agent_loop(state):
+            calls.append(state)
+            return {
+                "publish_status": "requires_human_review",
+                "final_decision": "draft",
+                "agent_trace": [],
+            }
+
+        runtime = InvestmentRuntime(
+            intent_parser=lambda _: {
+                "intent": 2,
+                "stock_code": "600519",
+                "stock_name": "贵州茅台",
+                "analyst_focus": "fundamental",
+                "sub_intents": [
+                    {
+                        "task_id": "analysis-1",
+                        "intent": "investment_analysis",
+                        "depends_on": [],
+                        "slots": {"stock_code": "600519", "analyst_focus": "fundamental"},
+                    },
+                    {
+                        "task_id": "backtest-1",
+                        "intent": "backtest",
+                        "depends_on": ["analysis-1"],
+                        "slots": {"stock_code": "600519"},
+                    },
+                ],
+            },
+            skill_selector=lambda *args, **kwargs: [],
+            agent_loop_runner=agent_loop,
+        )
+        result = runtime.run(AgentEvent(TriggerType.MESSAGE, "先分析茅台，再回测均线"))
+
+        self.assertEqual(calls[0]["task_plan"]["stages"], [["analysis-1"], ["backtest-1"]])
+        self.assertTrue(result.payload["task_plan"]["multi_intent"])
+        self.assertTrue(any(step["event"] == "task_plan_compiled" for step in result.trace))
+
+    def test_runtime_marks_a_reduced_capability_backup_as_draft_only(self):
+        def agent_loop(_state):
+            from control_plane.observability import record_llm_call
+
+            record_llm_call(
+                model="deepseek-chat",
+                latency_ms=8,
+                success=True,
+                used_backup=True,
+                usage=None,
+                recovery={"provider_role": "backup", "degradation_mode": "draft_only"},
+            )
+            return {
+                "publish_status": "requires_human_review",
+                "publish_reasons": ["investment recommendation requires human approval before publication"],
+                "human_review_required": True,
+                "final_decision": "draft",
+                "agent_trace": [],
+            }
+
+        runtime = InvestmentRuntime(
+            intent_parser=lambda _: {
+                "intent": 2, "stock_code": "600519", "stock_name": "贵州茅台", "analyst_focus": "technical",
+            },
+            skill_selector=lambda *args, **kwargs: [],
+            agent_loop_runner=agent_loop,
+        )
+        result = runtime.run(AgentEvent(TriggerType.MESSAGE, "分析茅台"))
+
+        self.assertEqual(result.payload["model_degradation"]["mode"], "draft_only")
+        self.assertTrue(result.payload["human_review_required"])
+        self.assertIn("reduced-capability backup", result.payload["publish_reasons"][-1])
 
     def test_runtime_can_retain_the_fixed_workflow_as_an_explicit_fallback(self):
         calls = []

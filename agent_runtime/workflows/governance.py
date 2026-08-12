@@ -68,6 +68,35 @@ def evaluate_output_gate(state: dict[str, Any]) -> dict[str, Any]:
         reasons.append("draft contains an unsupported certainty or return claim")
     if "[TOOL_ERROR]" in draft or "[ANALYSIS_ABORT]" in draft:
         reasons.append("draft contains an upstream failure marker")
+    model_failures = [item for item in (state.get("model_failures") or []) if isinstance(item, dict)]
+    if model_failures:
+        failure_types = sorted({str(item.get("error_type") or "UNKNOWN") for item in model_failures})
+        reasons.append(
+            "model provider recovery was exhausted: " + ", ".join(failure_types)
+        )
+
+    evidence = list(state.get("research_evidence") or [])
+    valid_evidence = []
+    stale_statuses = {"stale", "missing_report_period", "missing_retrieval_time"}
+    for item in evidence:
+        if not item.get("ok"):
+            continue
+        kind = item.get("source_kind")
+        freshness = item.get("freshness") or {}
+        if freshness.get("status") in stale_statuses:
+            continue
+        if kind == "market_evidence" and freshness.get("status") in {"retrieved", "reported_period"}:
+            valid_evidence.append(item)
+        elif kind == "document_evidence" and item.get("citations"):
+            valid_evidence.append(item)
+
+    # This is a decision-level evidence contract, not an impossible claim-by-
+    # claim semantic verifier.  A publishable investment draft must at least
+    # point to one current market result or page-cited session document.
+    # Compatibility adapters without a research-evidence contract cannot be
+    # judged here. Every production workflow writes the key before this gate.
+    if "research_evidence" in state and not valid_evidence:
+        reasons.append("no traceable current or page-cited evidence supports the investment draft")
 
     if reasons:
         return {
@@ -76,6 +105,7 @@ def evaluate_output_gate(state: dict[str, Any]) -> dict[str, Any]:
             "human_review_required": False,
             "draft_decision": draft,
             "final_decision": "[PUBLISH_BLOCKED] " + "; ".join(reasons),
+            "evidence_gate": {"passed": False, "valid_evidence_count": 0},
         }
 
     # Investment recommendations are always high-impact external advice. They
@@ -88,4 +118,9 @@ def evaluate_output_gate(state: dict[str, Any]) -> dict[str, Any]:
         "human_review_required": True,
         "draft_decision": draft,
         "final_decision": draft,
+        "evidence_gate": {
+            "passed": True,
+            "valid_evidence_count": len(valid_evidence),
+            "evidence_refs": [item.get("result_ref") for item in valid_evidence if item.get("result_ref")],
+        },
     }

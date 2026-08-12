@@ -1,0 +1,40 @@
+{
+  "dataset_id": "a-share-heldout-public-filings-v1",
+  "purpose": "Untouched public-disclosure corpus reserved for final RAG evaluation. It must not be used for retriever selection before Gold labels and the final test are frozen.",
+  "source_policy": "Official exchange-designated disclosure hosts only. Downloaded PDFs remain local; this manifest records stable public origin and report-period metadata.",
+  "documents": [
+    {
+      "document_id": "600150-2026-q1",
+      "security_code": "600150",
+      "company": "中国船舶",
+      "sector": "船舶制造",
+      "report_period": "2026Q1",
+      "published_at": "2026-04-30",
+      "title": "中国船舶工业股份有限公司2026年第一季度报告",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2026-04-30/1225261166.PDF"
+    },
+    {
+      "document_id": "600522-2025-annual",
+      "security_code": "600522",
+      "company": "中天科技",
+      "sector": "通信与海洋能源",
+      "report_period": "FY2025",
+      "published_at": "2026-04-25",
+      "title": "江苏中天科技股份有限公司2025年年度报告",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2026-04-25/1225177318.PDF"
+    },
+    {
+      "document_id": "002466-2025-h1",
+      "security_code": "002466",
+      "company": "天齐锂业",
+      "sector": "锂资源",
+      "report_period": "2025H1",
+      "published_at": "2025-08-30",
+      "title": "天齐锂业股份有限公司2025年半年度报告",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2025-08-30/1224628837.PDF"
+    }
+  ]
+}

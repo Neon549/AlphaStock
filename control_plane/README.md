@@ -1,7 +1,7 @@
 # Control Plane：触发、网关与运行时边界
 
 ```text
-HTTP / CLI / Cron / Webhook / Hook
+HTTP / CLI / Cron / Webhook / Hook / Source-change / Heartbeat
               │
               ▼
        AgentEvent（统一事件）
@@ -25,11 +25,18 @@ HTTP / CLI / Cron / Webhook / Hook
 ## 当前已接入
 
 - `/chat` 与 `/analyze` 是 HTTP trigger adapters：请求被转换为 `AgentEvent` 后交给 `Gateway`。
+- 外部财报、新闻和行情更新先进入 `SourceRegistry`。Cron watcher 和签名 Webhook
+  都使用 `source_id + source_version + content_hash` 生成同一个 `SOURCE_CHANGE`
+  事件；没有变化就不启动 Agent。
+- `SourceIngestionWorker` 先执行受限的 fetch/parse/index callback，再提交 revision
+  并 dispatch 事件；解析、切分或 pgvector 写入失败时保留可重试状态。
+- `HEARTBEAT` 是不依赖模型和工具的轻量存活检查，只验证 Gateway/Runtime 是否可响应。
 - `InvestmentRuntime` 在 intent=1/3/4 时直接返回，不启动重型分析；intent=2 才选择策略知识、文档 RAG 并调用固定投研工作流。
 - `PythonInvestmentRuntime` 是当前默认固定投研工作流；其节点实现位于 `agent_runtime/workflows/investment_handlers.py`。`LangGraphInvestmentRuntime` 只保留为可选兼容适配器，用于交叉运行时对照与紧急回滚。
 - `backtest/service.py` 是 API、LangChain tool 与运行时共用的单一回测执行服务。`PythonBacktestRuntime` 是 CLI 和“分析 + 回测”组合流程的默认回测运行时：固定执行回测、解读、参数优化三步；原始回测失败时跳过优化，避免产生误导性补全结果。LangGraph 回测图调用同一批 shared handlers。
 - Researcher 节点中的 `ResearchHarness` 仍是受限的自主循环：只能在允许的只读工具中选择，且有工具次数、结果长度、权限和审计 trace 限制。
 - PostgreSQL 的 `agent_events`、`agent_runs`、`agent_steps` 已记录事件、路由结果和不含原始报告/Prompt 的执行步骤；`event_id` 是跨进程幂等键。
+- PostgreSQL 的 `agent_sources` 与 `agent_source_changes` 记录数据源注册、最后版本和已接受的修订，保证进程重启后 Cron/Webhook 重试仍然幂等。
 - `agent_session_transcript` 自动追加用户/助手回合，作为完整会话记录；每轮最多取最近 8 条、总共 2,400 字符回灌。`agent_session_memory` 则保存股票、分析维度、未解决风险与证据 ID 等结构化会话摘要。
 - `agent_memory_maintenance_jobs` 是独立 Background Memory Worker 的持久化队列：用户路径仅入队，定时 Worker 才能读取限定 transcript ID 区间并创建待审核候选。Worker 没有工具/MCP 权限，不能直接批准、索引、修改偏好或发布内容。
 - `financial-indicators` 用显式 `报告期` 源字段选择最新财报记录；研究 Harness 将数据源、抓取时间、报告期、距今天数和新鲜度生成 UI evidence card。过期或缺失报告期的数据不能作为当前结论依据。
@@ -47,7 +54,8 @@ HTTP / CLI / Cron / Webhook / Hook
 
 ## 后续迁移顺序
 
-1. 主流程（600519 technical）和回测（600519/kdj_macd）已完成跨运行时真实对照：稳定安全契约一致。下一步补入已脱敏真实文档 fixture，完成真实文档 RAG 证据链对照；`compat/langgraph/` 在此之前保留为紧急回滚适配层。
-2. 扩充长期经验 Markdown 与专项检索评测集；索引只负责定位，真正进入 Context 的永远是命中的原文片段。
-3. 在 `agent_runs` 记录开始、取消和恢复状态，而不是只有完成态。
-4. `compat/langgraph/trading_graph.py` 已收敛为薄适配层；后续只维护其与 Python Runtime 的稳定契约，不再新增业务节点实现。
+1. 数据源事件和两阶段 `SourceIngestionWorker` 已就位；仍需为具体供应商实现受限 fetcher/ingestor，把下载内容接入 MinerU/pgvector 后再启动文档证据检索。
+2. 主流程（600519 technical）和回测（600519/kdj_macd）已完成跨运行时真实对照：稳定安全契约一致。下一步补入已脱敏真实文档 fixture，完成真实文档 RAG 证据链对照；`compat/langgraph/` 在此之前保留为紧急回滚适配层。
+3. 扩充长期经验 Markdown 与专项检索评测集；索引只负责定位，真正进入 Context 的永远是命中的原文片段。
+4. 在 `agent_runs` 记录开始、取消和恢复状态，而不是只有完成态。
+5. `compat/langgraph/trading_graph.py` 已收敛为薄适配层；后续只维护其与 Python Runtime 的稳定契约，不再新增业务节点实现。

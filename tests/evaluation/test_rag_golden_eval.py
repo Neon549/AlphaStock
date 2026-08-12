@@ -2,11 +2,17 @@ import unittest
 import json
 from pathlib import Path
 
-from evaluation.rag_golden_eval import evaluate_answer_governance, evaluate_retrieval_cases
-from evaluation.rag_snapshot_retrievers import build_bm25_retriever, build_dense_retriever, build_hybrid_rrf_retriever
+from evaluation.rag_golden_eval import bootstrap_mean_interval, citation_matches, evaluate_answer_governance, evaluate_retrieval_cases
+from evaluation.rag_snapshot_retrievers import _tokens, build_bm25_retriever, build_dense_retriever, build_hybrid_rrf_retriever
 
 
 class RagGoldenEvalTests(unittest.TestCase):
+    def test_child_section_satisfies_stable_parent_citation(self):
+        required = {"filename": "annual.pdf", "page": 5, "section": "年度报告"}
+        actual = {"filename": "annual.pdf", "page": 5, "section": "年度报告 / 主要会计数据"}
+        self.assertTrue(citation_matches(required, actual))
+        self.assertFalse(citation_matches(actual, required))
+
     def setUp(self):
         self.cases = [{
             "id": "cash", "corpus_version": "v1", "query": "cash flow",
@@ -23,8 +29,19 @@ class RagGoldenEvalTests(unittest.TestCase):
 
         result = evaluate_retrieval_cases(self.cases, retriever, k=3)
         self.assertEqual(result["recall_at_3"], 1.0)
+        self.assertEqual(result["precision_at_3"], 0.3333)
+        self.assertEqual(result["f1_at_3"], 0.5)
         self.assertEqual(result["mrr"], 0.5)
         self.assertEqual(result["citation_hit_rate"], 1.0)
+        self.assertEqual(result["uncertainty"]["recall_at_3"]["cases"], 1)
+        self.assertIn("unclassified", result["breakdown_by_source_type"])
+
+    def test_bootstrap_interval_is_reproducible_and_contains_observed_mean(self):
+        result = bootstrap_mean_interval([0.0, 1.0, 1.0], samples=100, seed=7)
+
+        self.assertEqual(result, bootstrap_mean_interval([0.0, 1.0, 1.0], samples=100, seed=7))
+        self.assertLessEqual(result["lower_95"], result["point_estimate"])
+        self.assertGreaterEqual(result["upper_95"], result["point_estimate"])
 
     def test_answer_governance_detects_missing_citation_and_unsupported_claim(self):
         result = evaluate_answer_governance(self.cases, {
@@ -46,6 +63,12 @@ class RagGoldenEvalTests(unittest.TestCase):
         self.assertEqual(bm25("cash flow", top_k=1)[0]["evidence_id"], "cash")
         self.assertEqual(dense("cash flow", top_k=1)[0]["evidence_id"], "cash")
         self.assertEqual(hybrid("cash flow", top_k=1)[0]["page"], 32)
+
+    def test_bm25_tokenizer_keeps_chinese_terms_and_stock_codes(self):
+        tokens = _tokens("贵州茅台 600519 营业收入")
+        self.assertIn("600519", tokens)
+        self.assertIn("营业", tokens)
+        self.assertIn("收入", tokens)
 
     def test_retrieval_tracks_no_evidence_abstention_separately(self):
         cases = [{

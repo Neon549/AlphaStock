@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-12",
+  "claim_boundary": "External public benchmark only; not AlphaStock online traffic and not production-tier Gold until independent review.",
+  "datasets": [
+    {
+      "id": "cfqa-test-sample-120",
+      "source": "CFQA",
+      "source_url": "https://github.com/ygan/CFQA",
+      "license": "MIT",
+      "repository_commit": "61c9ec3c4335d0411a1735cd228af8b3ead114fc",
+      "source_file": "dataset/split_by_company/split_by_company_test.json",
+      "source_file_sha256": "869ec90815e2feb77763d0fa40317df139051d46987398b11ad12413be4dedb0",
+      "local_candidate": "runtime/external/cfqa_test_sample_120.jsonl",
+      "case_count": 120,
+      "sampling": {"method": "uniform_random_without_replacement", "seed": 20260812},
+      "evidence_status": "pdf_mapping_pending",
+      "allowed_metrics_after_mapping": ["recall_at_k", "precision_at_k", "mrr", "ndcg", "citation_hit_rate"],
+      "blocked_claims": ["online_user_accuracy", "production_representative_rag_quality"]
+    },
+    {
+      "id": "fintruthqa-sample-120",
+      "source": "FinTruthQA",
+      "source_url": "https://github.com/bethxx99/FinTruthQA",
+      "license": "Apache-2.0",
+      "repository_commit": "4fc4d7a5a6a355ba89a82cbe24c6e95f41bead4b",
+      "source_file": "dataset/FinTruthQA.csv",
+      "source_file_sha256": "4477d59b73d0e1e68d4003d6fed2ca226bc322d8e55b6ada32e3efebfe8301ea",
+      "local_candidate": "runtime/external/fintruthqa_sample_120.jsonl",
+      "case_count": 120,
+      "sampling": {"method": "uniform_random_without_replacement", "seed": 20260812},
+      "evidence_status": "no_page_level_evidence",
+      "allowed_metrics": ["intent_distribution", "slot_coverage", "clarification_rate", "answer_quality_label_distribution"],
+      "blocked_claims": ["page_level_rag_recall", "online_user_accuracy"]
+    }
+  ]
+}

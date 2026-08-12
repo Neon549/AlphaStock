@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from agent_runtime.context.budget import ContextBlock, pack_context
+from agent_runtime.reliability import classify_model_failure
 from agent_runtime.workflows.governance import evaluate_output_gate, validate_analysis_scope
 
 
@@ -42,6 +43,18 @@ def _failed(value: str | None) -> bool:
     return not value or value.strip().startswith(("[ANALYSIS_ABORT]", "[TOOL_ERROR]"))
 
 
+def _safe_analyst_call(name: str, invoke) -> tuple[str, dict[str, Any] | None]:
+    """Contain a model outage in one analyst branch instead of failing the graph."""
+    try:
+        return invoke(), None
+    except Exception as exc:
+        failure = classify_model_failure(exc)
+        return (
+            f"[ANALYSIS_ABORT] {name} unavailable; error_type={failure.error_type.value}",
+            failure.to_dict(),
+        )
+
+
 def policy_guard_node(state: dict[str, Any]) -> dict[str, Any]:
     policy = validate_analysis_scope(state.get("stock_code", ""), state.get("analyst_focus") or "all", state.get("user_doc_context") or "")
     if not policy["allowed"]:
@@ -56,13 +69,32 @@ def analysts_node(state: dict[str, Any]) -> dict[str, Any]:
     from agent_runtime.agents.technical_analyst import run_technical_analysis
 
     code, focus = state["stock_code"], state.get("analyst_focus") or "all"
-    def fundamental(): return run_fundamental_analysis(code, state.get("user_doc_context") or "") if focus in ("all", "fundamental") else SKIPPED
-    def technical(): return run_technical_analysis(code) if focus in ("all", "technical") else SKIPPED
-    def sentiment(): return run_sentiment_analysis(code) if focus in ("all", "sentiment") else SKIPPED
+    def fundamental():
+        return _safe_analyst_call(
+            "fundamental analyst",
+            lambda: run_fundamental_analysis(code, state.get("user_doc_context") or ""),
+        ) if focus in ("all", "fundamental") else (SKIPPED, None)
+
+    def technical():
+        return _safe_analyst_call(
+            "technical analyst", lambda: run_technical_analysis(code)
+        ) if focus in ("all", "technical") else (SKIPPED, None)
+
+    def sentiment():
+        return _safe_analyst_call(
+            "sentiment analyst", lambda: run_sentiment_analysis(code)
+        ) if focus in ("all", "sentiment") else (SKIPPED, None)
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         futures = [executor.submit(contextvars.copy_context().run, fn) for fn in (fundamental, technical, sentiment)]
-        fundamental_report, technical_report, sentiment_report = [future.result() for future in futures]
-    return {"fundamental_report": fundamental_report, "technical_report": technical_report, "sentiment_report": sentiment_report}
+        (fundamental_report, fundamental_failure), (technical_report, technical_failure), (sentiment_report, sentiment_failure) = [future.result() for future in futures]
+    return {
+        "fundamental_report": fundamental_report,
+        "technical_report": technical_report,
+        "sentiment_report": sentiment_report,
+        "model_failures": [
+            failure for failure in (fundamental_failure, technical_failure, sentiment_failure) if failure
+        ],
+    }
 
 
 def context_snapshot_node(state: dict[str, Any]) -> dict[str, Any]:
@@ -75,7 +107,13 @@ def validation_node(state: dict[str, Any]) -> dict[str, Any]:
     reports = [state.get(name) for name in ("fundamental_report", "technical_report", "sentiment_report")]
     failures = [report for report in reports if report != SKIPPED and _failed(report)]
     if len(failures) >= 3:
-        return {"risk_assessment": "all requested analyst branches failed", "final_decision": "[PUBLISH_BLOCKED] insufficient verified evidence"}
+        return {
+            "risk_assessment": "all requested analyst branches failed",
+            "final_decision": "[PUBLISH_BLOCKED] insufficient verified evidence",
+            "publish_status": "blocked",
+            "publish_reasons": ["all requested analyst branches failed"],
+            "human_review_required": bool(state.get("model_failures")),
+        }
     if failures and state.get("replan_attempts", 0) < 1:
         return {"risk_assessment": "partial analyst failure", "replan_required": True}
     return {"risk_assessment": "validation passed" if not failures else "partial evidence only", "replan_required": False}
@@ -87,9 +125,26 @@ def replan_node(state: dict[str, Any]) -> dict[str, Any]:
     from agent_runtime.agents.technical_analyst import run_technical_analysis
 
     updates: dict[str, Any] = {"replan_attempts": state.get("replan_attempts", 0) + 1, "replan_required": False}
-    if _failed(state.get("fundamental_report")): updates["fundamental_report"] = run_fundamental_analysis(state["stock_code"])
-    if _failed(state.get("technical_report")): updates["technical_report"] = run_technical_analysis(state["stock_code"])
-    if _failed(state.get("sentiment_report")): updates["sentiment_report"] = run_sentiment_analysis(state["stock_code"])
+    failures = list(state.get("model_failures") or [])
+    if _failed(state.get("fundamental_report")):
+        updates["fundamental_report"], failure = _safe_analyst_call(
+            "fundamental analyst", lambda: run_fundamental_analysis(state["stock_code"])
+        )
+        if failure:
+            failures.append(failure)
+    if _failed(state.get("technical_report")):
+        updates["technical_report"], failure = _safe_analyst_call(
+            "technical analyst", lambda: run_technical_analysis(state["stock_code"])
+        )
+        if failure:
+            failures.append(failure)
+    if _failed(state.get("sentiment_report")):
+        updates["sentiment_report"], failure = _safe_analyst_call(
+            "sentiment analyst", lambda: run_sentiment_analysis(state["stock_code"])
+        )
+        if failure:
+            failures.append(failure)
+    updates["model_failures"] = failures
     return updates
 
 
@@ -103,7 +158,15 @@ def researcher_node(state: dict[str, Any]) -> dict[str, Any]:
 
     result = run_research_harness(stock_code=state["stock_code"], snapshot=state.get("context_snapshot") or {}, session_id=state.get("session_id"), request_query=state.get("analysis_query") or state["stock_code"], runtime_context=state.get("agent_context") or "", granted_permissions={"document:read", "market:read", "memory:read"})
     observations = result["observations"]
-    return {"bull_argument": result["report"], "bear_argument": result["report"], "debate_rounds": state.get("debate_rounds", 0) + 1, "agent_trace": result["trace"], "research_evidence": observations, "evidence_cards": build_evidence_cards(observations)}
+    return {
+        "bull_argument": result["report"], "bear_argument": result["report"],
+        "debate_rounds": state.get("debate_rounds", 0) + 1,
+        "agent_trace": result["trace"], "research_evidence": observations,
+        "evidence_cards": build_evidence_cards(observations),
+        "model_failures": [
+            *(state.get("model_failures") or []), *(result.get("model_failures") or []),
+        ],
+    }
 
 
 def _calc_position_size(decision_text: str, confidence: str) -> str:
@@ -190,7 +253,16 @@ def trader_node(state: dict[str, Any]) -> dict[str, Any]:
 ### 风险提示
 [2-3条主要风险]
 """
-    raw_decision = _get_trader_model().invoke([_human_message(prompt)]).content
+    try:
+        raw_decision = _get_trader_model().invoke([_human_message(prompt)]).content
+    except Exception as exc:
+        failure = classify_model_failure(exc)
+        return {
+            "final_decision": "[PUBLISH_BLOCKED] 模型服务不可用，未生成投资结论。",
+            "model_failures": [
+                *(state.get("model_failures") or []), failure.to_dict(),
+            ],
+        }
     final_decision = _fix_position_consistency(raw_decision, _trader_confidence(risk_assessment))
     return {"final_decision": final_decision}
 

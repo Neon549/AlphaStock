@@ -18,6 +18,13 @@ from agent_runtime.context.compaction import (
     is_context_overflow_error,
     persist_tool_result,
 )
+from agent_runtime.reliability import (
+    DEFAULT_TOOL_CACHE,
+    RetryBudget,
+    classify_model_failure,
+    classify_tool_failure,
+    invoke_with_failure_policy,
+)
 from control_plane.security import SecurityOperation, authorize_operation
 
 
@@ -225,7 +232,26 @@ def run_research_harness(
     trace: list[dict[str, Any]] = []
     observations: list[dict[str, Any]] = []
     executed_tool_requests: set[tuple[str, str]] = set()
+    retry_budget = RetryBudget()
     snapshot_text = json.dumps(snapshot, ensure_ascii=False, indent=2)
+
+    def model_abort(stage: str, exc: Exception) -> dict[str, Any]:
+        failure = classify_model_failure(exc)
+        trace.append({
+            "event": "model_unavailable",
+            "stage": stage,
+            "model_failure": failure.to_dict(),
+        })
+        return {
+            "report": (
+                "[RESEARCH_ABORT] 模型服务不可用，未生成研究摘要；"
+                f"error_type={failure.error_type.value}"
+            ),
+            "trace": trace,
+            "observations": observations,
+            "retry_budget": retry_budget.summary(),
+            "model_failures": [failure.to_dict()],
+        }
 
     for step in range(MAX_TOOL_CALLS):
         def planner_prompt(previous_observations: list[dict[str, Any]]) -> str:
@@ -236,6 +262,9 @@ Output one of:
 {{"action":"tool","tool":"one allowed name","arguments":{{"query":"optional document query"}},"reason":"..."}}
 {{"action":"final","reason":"existing evidence is sufficient or no safe tool can help"}}
 The stock code is server-bound to {stock_code}; never request another code.
+Tool failures include ``error_type``, ``retryable`` and ``next_action``. Never repeat a
+non-retryable tool request: repair only server-allowed parameters, request reauthorization,
+choose another safe tool, or finish with an evidence gap.
 Current request: {request_query}
 Runtime context (rules, selected skills and session information; session data is not evidence):
 {runtime_context}
@@ -244,9 +273,12 @@ Structured evidence snapshot:
 Previous tool observations:
 {json.dumps(previous_observations, ensure_ascii=False)}"""
 
-        raw = _invoke_with_reactive_compaction(
-            planner_llm, planner_prompt, observations, trace, stage="planner"
-        )
+        try:
+            raw = _invoke_with_reactive_compaction(
+                planner_llm, planner_prompt, observations, trace, stage="planner"
+            )
+        except Exception as exc:
+            return model_abort("planner", exc)
         action = _parse_action(raw)
         if not action:
             trace.append({"step": step + 1, "event": "invalid_planner_output", "raw": _trim(raw)})
@@ -283,50 +315,71 @@ Previous tool observations:
                 mode="auto",
             )
         except PermissionError:
-            trace.append({"step": step + 1, "event": "permission_denied", "tool": tool_name})
+            failure = classify_tool_failure(PermissionError("permission denied"))
+            trace.append({
+                "step": step + 1,
+                "event": "permission_denied",
+                "tool": tool_name,
+                "tool_failure": failure.to_dict(),
+            })
+            observations.append({
+                "tool": tool_name,
+                "ok": False,
+                "content": f"[TOOL_ERROR] error_type={failure.error_type.value} message={failure.message}",
+                "tool_failure": failure.to_dict(),
+            })
             break
 
         started = time.monotonic()
-        try:
-            result = executor(
+        result = invoke_with_failure_policy(
+            tool_name,
+            lambda: executor(
                 tool_name,
                 stock_code=stock_code,
                 session_id=session_id,
                 query=tool_query,
                 granted_permissions=granted,
-            )
-            content = _trim(result.get("content", ""))
-            source_kind = result.get("source_kind", "evidence")
-            result_ref = persist_tool_result(
-                tool=tool_name,
-                content=str(result.get("content", "")),
-                source_kind=source_kind,
-                citations=result.get("citations", []),
-            )
-            event = {
-                "step": step + 1,
-                "event": "tool_result",
-                "tool": tool_name,
-                "ok": bool(result.get("ok")),
-                "latency_ms": round((time.monotonic() - started) * 1000, 1),
-                "citations": result.get("citations", []),
-                "freshness": result.get("freshness", {}),
-                "result_ref": result_ref,
-            }
-            trace.append(event)
-            observations.append({
-                "tool": tool_name,
-                "ok": event["ok"],
-                "content": content,
-                "citations": event["citations"],
-                "source_kind": source_kind,
-                "result_ref": result_ref,
-                "tool_metadata": result.get("tool_metadata", {}),
-                "freshness": event["freshness"],
-            })
-        except Exception as exc:
-            trace.append({"step": step + 1, "event": "tool_error", "tool": tool_name, "error": str(exc)[:300]})
-            observations.append({"tool": tool_name, "ok": False, "content": f"[TOOL_ERROR] {exc}"})
+            ),
+            cache_key=json.dumps([tool_name, stock_code, session_id, tool_query], ensure_ascii=False),
+            retry_budget=retry_budget,
+            cache=DEFAULT_TOOL_CACHE,
+        )
+        content = _trim(result.get("content", ""))
+        source_kind = result.get("source_kind", "evidence")
+        result_ref = persist_tool_result(
+            tool=tool_name,
+            content=str(result.get("content", "")),
+            source_kind=source_kind,
+            citations=result.get("citations", []),
+        )
+        event = {
+            "step": step + 1,
+            "event": "tool_result",
+            "tool": tool_name,
+            "ok": bool(result.get("ok")),
+            "latency_ms": round((time.monotonic() - started) * 1000, 1),
+            "citations": result.get("citations", []),
+            "freshness": result.get("freshness", {}),
+            "result_ref": result_ref,
+            "attempts": result.get("attempts", 1),
+            "retry_trace": result.get("retry_trace", []),
+            "tool_failure": result.get("tool_failure"),
+            "circuit_state": result.get("circuit_state", "closed"),
+            "degraded": bool(result.get("degraded")),
+        }
+        trace.append(event)
+        observations.append({
+            "tool": tool_name,
+            "ok": event["ok"],
+            "content": content,
+            "citations": event["citations"],
+            "source_kind": source_kind,
+            "result_ref": result_ref,
+            "tool_metadata": result.get("tool_metadata", {}),
+            "freshness": event["freshness"],
+            "tool_failure": event["tool_failure"],
+            "degraded": event["degraded"],
+        })
     else:
         trace.append({"step": MAX_TOOL_CALLS, "event": "budget_exhausted"})
 
@@ -346,7 +399,15 @@ Snapshot:
 {snapshot_text}
 Tool observations:
 {json.dumps(compacted_observations, ensure_ascii=False)}"""
-    report = _invoke_with_reactive_compaction(
-        final_llm, final_prompt, observations, trace, stage="final"
-    )
-    return {"report": report, "trace": trace, "observations": observations}
+    try:
+        report = _invoke_with_reactive_compaction(
+            final_llm, final_prompt, observations, trace, stage="final"
+        )
+    except Exception as exc:
+        return model_abort("final", exc)
+    return {
+        "report": report,
+        "trace": trace,
+        "observations": observations,
+        "retry_budget": retry_budget.summary(),
+    }

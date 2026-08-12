@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "reporting_rule": "Only a frozen production-tier dataset with an independent review protocol may support production-representative claims; public_external_gold datasets may support explicitly named external benchmark claims.",
+  "datasets": [
+    {
+      "id": "rag-contract-v1",
+      "path": "evaluation/datasets/rag_golden_seed.jsonl",
+      "tier": "contract",
+      "case_count": 3,
+      "sha256": "5beef071c702915406db82b971eedeb0debc324ad899ca51fe2cf085a7cdfffa",
+      "purpose": "Deterministic retrieval, citation, and abstention regression fixture.",
+      "claim_limit": "Do not report as RAG quality or production retrieval accuracy."
+    },
+    {
+      "id": "intent-routing-smoke-v1",
+      "path": "data/intent/eval_smoke.jsonl",
+      "tier": "smoke",
+      "case_count": 16,
+      "sha256": "faec7262555fd71c7c3b27ba073d8f954da66092e851689610c177e347535c68",
+      "purpose": "Seeded single- and multi-intent routing integration checks.",
+      "claim_limit": "Do not report as online intent-routing accuracy."
+    },
+    {
+      "id": "workflow-governance-contract-v1",
+      "path": "evaluation/datasets/workflow_regression.jsonl",
+      "tier": "contract",
+      "case_count": 8,
+      "sha256": "6a34eab9b529bcaf774b49130741b6174e3e1b1b74755b1212e7fa6e20e68056",
+      "purpose": "Scope validation and publication-gate safety regression fixture.",
+      "claim_limit": "Do not report as real-world safety coverage."
+    },
+    {
+      "id": "public-filings-rag-candidate-v1",
+      "path": "evaluation/corpus/production_candidate_v1/rag_candidates.jsonl",
+      "tier": "candidate",
+      "case_count": 22,
+      "sha256": "86c1e85863b03f1195069095862dc1b5479bfdeefd938e02621ea1ad5187a7ee",
+      "corpus_snapshot": "sha256:dbb2217a11586b10d44b478345341b8cb844ee88254ae3af62ebc5c4c66f4e35",
+      "review_status": "pending_independent_human_review",
+      "purpose": "Page-citable public-filing retrieval and abstention candidate set.",
+      "claim_limit": "Candidate diagnostics only; do not report as production or resume quality."
+    },
+    {
+      "id": "public-filings-query-robustness-candidate-v1",
+      "path": "evaluation/corpus/production_candidate_v1/rag_query_variants.jsonl",
+      "tier": "candidate",
+      "case_count": 88,
+      "sha256": "24a4a12dc9cc35ba903b0a1f7543008e600e7c7642a1769bdf00c1311cb11174",
+      "corpus_snapshot": "sha256:dbb2217a11586b10d44b478345341b8cb844ee88254ae3af62ebc5c4c66f4e35",
+      "review_status": "template_generated_pending_human_review",
+      "purpose": "Synthetic alias, stock-code, colloquial and filing-anchored retrieval stress set.",
+      "claim_limit": "Synthetic candidate traffic; do not present as a real-user distribution or resume metric."
+    },
+    {
+      "id": "heldout-public-filings-manual-expert-candidate-v1",
+      "path": "evaluation/corpus/heldout_public_filings_v1/rag_manual_expert_candidates.jsonl",
+      "tier": "candidate",
+      "case_count": 25,
+      "sha256": "368fe5badf83da50ea0138cdbd1163427bd6bd18e434b23a1f0369fce4b08fec",
+      "corpus_snapshot": "sha256:2148a58d30bec80a0cd809c85068b01e00c76852b55c8d62919802ecda02f70a",
+      "review_status": "manual_expert_queries_and_gold_pending_independent_human_review",
+      "purpose": "Untouched three-filing held-out retrieval development set with 22 fact questions and 3 wrong-period abstentions.",
+      "claim_limit": "Held-out documents do not make manual questions representative; use only for development diagnostics and never as a resume metric."
+    },
+    {
+      "id": "heldout-public-filings-manual-expert-candidate-v2",
+      "path": "evaluation/corpus/heldout_public_filings_v2/rag_manual_expert_candidates.jsonl",
+      "tier": "candidate",
+      "case_count": 22,
+      "sha256": "4a864af5657c03dd753b0106dc47ced8e9fabec9643c79a88853e3a852d4c172",
+      "corpus_snapshot": "sha256:f84d10bd7bc5ed3164909da02ff341909cbadec87ff8305ebbe433376fa3a4c5",
+      "review_status": "manual_expert_queries_and_gold_pending_independent_human_review",
+      "purpose": "Independent two-filing held-out retrieval development set covering Guizhou Moutai and CATL.",
+      "claim_limit": "Held-out documents do not make manual questions representative; use only for development diagnostics and never as a resume metric."
+    },
+    {
+      "id": "external-cfqa-source-mapping-candidate-v1",
+      "path": "evaluation/corpus/external_cfqa_v1/rag_validation_candidates.jsonl",
+      "tier": "candidate",
+      "case_count": 9,
+      "sha256": "1f8145293a87c35dab6432898e5b75fc4fbd9ad4c832d355b8d1243e2f3eb23b",
+      "corpus_snapshot": "sha256:ea6a2e615ef98abae90ba8877f3f36eed8e25a356e937dd132efd996ed89e8b6",
+      "review_status": "public_source_mapped_pending_independent_human_review",
+      "purpose": "Real investor questions from the public CFQA dataset mapped to official annual-report pages for retrieval validation.",
+      "claim_limit": "Candidate retrieval diagnostics only; public questions are not AlphaStock online logs and must not support production or resume quality claims."
+    },
+    {
+      "id": "financebench-open-source-public-gold-v1",
+      "path": "evaluation/corpus/financebench_v1/rag_public_gold.jsonl",
+      "tier": "external_gold",
+      "case_count": 150,
+      "sha256": "cc43dfec02450b58facfb6f0ccd1b05c69531e0d20ade963a79cd6827c6f00f9",
+      "corpus_snapshot": "sha256:1fb291a3149c1dde1c192eb8957d93925e8bd55b2353007926f8c7c9ad6c22f9",
+      "review_status": "public_human_annotated_by_financebench_team",
+      "purpose": "Public FinanceBench open-source sample with human answers, justifications, evidence text, and PDF page labels.",
+      "source_repository": "https://github.com/patronus-ai/financebench",
+      "claim_limit": "May support external benchmark claims for this public dataset; it is not AlphaStock online traffic or production-representative quality."
+    }
+  ]
+}

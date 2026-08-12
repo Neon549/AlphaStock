@@ -1,0 +1,100 @@
+{
+  "dataset_id": "external-cfqa-source-mapping-v1",
+  "source_manifest": "evaluation\\corpus\\external_cfqa_v1\\sources.json",
+  "downloaded_at": "2026-08-12T05:37:50.889776+00:00",
+  "document_count": 7,
+  "corpus_snapshot": "sha256:ea6a2e615ef98abae90ba8877f3f36eed8e25a356e937dd132efd996ed89e8b6",
+  "documents": [
+    {
+      "document_id": "300793-2022-annual",
+      "security_code": "300793",
+      "company": "佳禾智能",
+      "report_period": "FY2022",
+      "published_at": "2023-04-27",
+      "title": "佳禾智能科技股份有限公司2022年年度报告全文",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2023-04-27/1216618531.PDF",
+      "local_path": "evaluation\\corpus\\downloads\\external-cfqa-v1\\300793-2022-annual.pdf",
+      "byte_size": 4833971,
+      "sha256": "b8dd963b66c606afa9bcbc67f4dcbefd56e6a94e98c7b4db43aab27ef271e093"
+    },
+    {
+      "document_id": "603077-2022-annual",
+      "security_code": "603077",
+      "company": "和邦生物",
+      "report_period": "FY2022",
+      "published_at": "2023-02-21",
+      "title": "四川和邦生物科技股份有限公司2022年年度报告全文",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2023-02-21/1215907004.PDF",
+      "local_path": "evaluation\\corpus\\downloads\\external-cfqa-v1\\603077-2022-annual.pdf",
+      "byte_size": 4255750,
+      "sha256": "16b3aefc49e4e94611124443fa5a63de758a9995723190047c26ab6501d3d3c9"
+    },
+    {
+      "document_id": "688608-2020-annual",
+      "security_code": "688608",
+      "company": "恒玄科技",
+      "report_period": "FY2020",
+      "published_at": "2021-04-27",
+      "title": "恒玄科技（上海）股份有限公司2020年年度报告",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2021-04-27/1209820693.PDF",
+      "local_path": "evaluation\\corpus\\downloads\\external-cfqa-v1\\688608-2020-annual.pdf",
+      "byte_size": 3620093,
+      "sha256": "5e24fb6e8069f1f8af38f7d791ce5bbbb43e981beae1b44e0afa89796ac52a0d"
+    },
+    {
+      "document_id": "002727-2022-annual",
+      "security_code": "002727",
+      "company": "一心堂",
+      "report_period": "FY2022",
+      "published_at": "2023-04-21",
+      "title": "一心堂药业集团股份有限公司2022年年度报告全文",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2023-04-21/1216487652.PDF",
+      "local_path": "evaluation\\corpus\\downloads\\external-cfqa-v1\\002727-2022-annual.pdf",
+      "byte_size": 1450622,
+      "sha256": "3711e6a66ded672563fcc9c6c7c7d0ed0f156dcfe1b0703427d76601e0ab74f5"
+    },
+    {
+      "document_id": "603806-2020-annual",
+      "security_code": "603806",
+      "company": "福斯特",
+      "report_period": "FY2020",
+      "published_at": "2021-03-26",
+      "title": "杭州福斯特应用材料股份有限公司2020年年度报告",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2021-03-26/1209453735.PDF",
+      "local_path": "evaluation\\corpus\\downloads\\external-cfqa-v1\\603806-2020-annual.pdf",
+      "byte_size": 3866537,
+      "sha256": "34779d30d16b26246b7af3ba1f2065053601e7a60b369dd7de4766c78ce0bf13"
+    },
+    {
+      "document_id": "600496-2022-annual",
+      "security_code": "600496",
+      "company": "精工钢构",
+      "report_period": "FY2022",
+      "published_at": "2023-04-18",
+      "title": "长江精工钢结构（集团）股份有限公司2022年年度报告",
+      "source_host": "issuer",
+      "source_url": "https://www.600496.com/upload/files/202304/20230428174711tqp8.PDF",
+      "local_path": "evaluation\\corpus\\downloads\\external-cfqa-v1\\600496-2022-annual.pdf",
+      "byte_size": 4214691,
+      "sha256": "94da998ea38bd30976c175e8d7485c0207874e56e0a160854d7b011c63de52c7"
+    },
+    {
+      "document_id": "688366-2020-annual",
+      "security_code": "688366",
+      "company": "昊海生科",
+      "report_period": "FY2020",
+      "published_at": "2021-03-27",
+      "title": "上海昊海生物科技股份有限公司2020年年度报告",
+      "source_host": "cninfo",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2021-03-27/1209464806.PDF",
+      "local_path": "evaluation\\corpus\\downloads\\external-cfqa-v1\\688366-2020-annual.pdf",
+      "byte_size": 4032448,
+      "sha256": "4f599b0044419f8341f7a3218f959ab8d4774b24c3e0c3cd0ff1d7902ce4560f"
+    }
+  ]
+}
