@@ -28,7 +28,7 @@ NEWS_EXPIRE_DAYS = 30
 STREAM_INTERVAL_MINUTES = 5
 EMBED_MODEL = "shibing624/text2vec-base-chinese"  # 768 维，与 DDL 一致
 
-WATCH_LIST = [
+_BASE_WATCH_LIST = [
     ("000001", "平安银行"),
     ("600036", "招商银行"),
     ("601166", "兴业银行"),
@@ -48,6 +48,24 @@ WATCH_LIST = [
     ("600276", "恒瑞医药"),
     ("000538", "云南白药"),
 ]
+
+# Keep the public evaluation queries in the same refresh path as production
+# watch stocks.  Otherwise an evaluation can look at a stale slice of the
+# remote corpus even when the live application is being refreshed.
+EVAL_STOCKS = [
+    ("600519", "贵州茅台"),
+    ("300750", "宁德时代"),
+    ("000858", "五粮液"),
+    ("600036", "招商银行"),
+    ("002415", "海康威视"),
+    ("601138", "工业富联"),
+    ("300124", "汇川技术"),
+    ("600487", "亨通光电"),
+    ("002475", "立讯精密"),
+    ("603501", "韦尔股份"),
+]
+
+WATCH_LIST = list(dict.fromkeys(_BASE_WATCH_LIST + EVAL_STOCKS))
 
 # ── Embedding 模型单例 ────────────────────────────────────────────────
 
