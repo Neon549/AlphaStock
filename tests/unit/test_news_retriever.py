@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from rag.retriever import (
+    _is_official_announcement,
     _document_identity,
     _rrf_ranked,
     expand_finance_query,
@@ -42,6 +43,12 @@ class NewsRetrieverTests(unittest.TestCase):
 
         self.assertEqual(_document_identity(live), _document_identity(persisted))
 
+    def test_official_announcement_is_identified_for_news_first_fallback(self):
+        announcement = "公司（000001） 公告：关于股份回购的公告 内容：回购金额 来源：巨潮资讯 链接：https://example.test/a.pdf"
+
+        self.assertTrue(_is_official_announcement(announcement))
+        self.assertFalse(_is_official_announcement("【公司 | 2026-08-12】股份回购新闻"))
+
     def test_multi_intent_query_builds_separate_facets(self):
         facets = finance_query_facets("招商银行近期有什么人事变动或资金流动消息？")
 
@@ -55,6 +62,7 @@ class NewsRetrieverTests(unittest.TestCase):
 
         self.assertFalse(finance_title_matches(document, facet))
         self.assertTrue(finance_title_matches("汇川技术成立轨道交通设备公司", facet))
+
 
     @patch("rag.retriever.retrieve_news")
     @patch("rag.retriever.retrieve_news_corpus")

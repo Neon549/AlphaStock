@@ -87,3 +87,13 @@
 - 改动：识别价格、业绩、分红、人事、资金、回购、上市、业务、订单、大宗交易等金融 facet；每个命中 facet 先保留一条标题相关证据，再用主 BM25 排名填满 Top-K。facet 证据同样按公告 URL 去重，并增加标题相关性门控，避免因公告正文偶然出现“子公司”等词而错选回购公告。
 - 结果：公告去重基线 `0.6439 → 0.6530`（`+0.0091`）；相对 news-only `0.6191` 累计提升 `+0.0339`。招商银行“人事 + 资金”单题 `0.136 → 0.227`（`+0.091`），其他题不下降。
 - 回归：全量 `242/242` tests 通过；公告采集、来源去重、多意图拆分和标题门控均有单元测试。
+
+## RAG-R9：RAGAS 0.2 语义评估与线上候选策略校正
+
+- 日期：2026-08-13
+- 原因：Python 3.13 无法安装历史 `ragas==0.1.21` 所需的 NumPy 1.26 依赖；旧评测脚本会将 `ImportError` 静默写成空对象，无法据此得出结论。
+- 改动：新增隔离的 `requirements-ragas.txt` 和 `evaluation.run_ragas_v02`；用 RAGAS `0.2.15`、项目配置的 OpenAI-compatible Judge、DashScope `text-embedding-v3` 运行四项指标。Answer Relevancy 固定 `strictness=1`，兼容不支持 `n>1` 的 judge endpoint。隔离环境位于被 Git 忽略的 `runtime/ragas-venv`，不改生产 LangChain 依赖。
+- 授权：评测只发送 10 条固定评测的 query、生成答案、检索新闻/公告上下文和参考答案；不发送数据库密码、API Key 或用户数据。
+- Top-10 结果：news-only 的 Faithfulness / Answer Relevancy / Context Recall / Context Precision 为 `0.8533 / 0.6802 / 0.5667 / 0.6562`；公告融合 + 分槽为 `0.9660 / 0.8602 / 0.6333 / 0.4967`。公告提高证据覆盖和可依据性，但引入较多上下文噪声。
+- Top-5 线上口径：news-only 为 `0.9475 / 0.5878 / 0.4500 / 0.5643`；公告融合 + 分槽为 `0.9875 / 0.6676 / 0.3000 / 0.3828`。因此不能把公告直接混入默认 Top-5，否则 Context Recall 和 Precision 均下降。
+- 决策：线上改为 news-first；官方公告继续入库，只有新闻候选不足 Top-K 时作为补位。这样不牺牲当前线上 Top-5 基线，同时保留主证据语料、离线深度候选和后续 query-aware rerank 的能力。完整数字见 `evaluation/RAGAS_REMOTE_REPORT.md`。

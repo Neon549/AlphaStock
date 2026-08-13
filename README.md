@@ -135,7 +135,9 @@ first-class Claude remote connector support remains a separate OAuth task.
 
 Full report: [`evaluation/EVAL_REPORT.md`](evaluation/EVAL_REPORT.md)
 
-Evaluated with **RAGAS 0.1.21** using Qwen as the Judge LLM (switched from DeepSeek after discovering DeepSeek does not support `n > 1`, causing `Answer Relevancy = nan`).
+Latest remote news RAGAS comparison: [`evaluation/RAGAS_REMOTE_REPORT.md`](evaluation/RAGAS_REMOTE_REPORT.md).
+
+RAGAS is run in a separate evaluation environment (`requirements-ragas.txt`) so it cannot change the production LangChain runtime.  The Python 3.13-compatible runner uses **RAGAS 0.2** with the configured judge model and DashScope `text-embedding-v3`; Answer Relevancy runs at `strictness=1` because the configured compatible endpoint does not support `n > 1`.
 
 | Metric | Dense-only | Hybrid (BM25 + pgvector + RRF) |
 |---|---|---|

@@ -164,6 +164,12 @@ def _document_title(document: str) -> str:
     return (document or "").strip()
 
 
+def _is_official_announcement(document: str) -> bool:
+    """Recognize persisted CNInfo evidence without exposing source internals."""
+
+    return "公告：" in (document or "") and "来源：巨潮资讯" in (document or "")
+
+
 def finance_title_matches(title_or_document: str, facet: str) -> bool:
     """Require a facet's high-signal term in the evidence title."""
 
@@ -186,6 +192,36 @@ def _unique_bm25_ranking(bm25: SimpleBM25, corpus: list[str], query: str) -> lis
         seen.add(identity)
         ranked.append((document, score))
     return ranked
+
+
+def _select_faceted_bm25(corpus: list[str], query: str, top_k: int) -> tuple[list[tuple[str, float]], list[tuple[str, float]]]:
+    """Return diversified top-k plus the full primary BM25 ranking."""
+
+    if not corpus or top_k <= 0:
+        return [], []
+    bm25 = SimpleBM25(corpus)
+    primary = _unique_bm25_ranking(bm25, corpus, expand_finance_query(query))
+    selected: list[tuple[str, float]] = []
+    selected_ids: set[str] = set()
+    facets = finance_query_facets(query)
+    if len(facets) > 1 or (facets and facets[0] != expand_finance_query(query)):
+        for facet in facets:
+            for document, score in _unique_bm25_ranking(bm25, corpus, facet):
+                identity = _document_identity(document)
+                if identity not in selected_ids and finance_title_matches(document, facet):
+                    selected.append((document, score))
+                    selected_ids.add(identity)
+                    break
+            if len(selected) >= top_k:
+                return selected, primary
+    for document, score in primary:
+        identity = _document_identity(document)
+        if identity not in selected_ids:
+            selected.append((document, score))
+            selected_ids.add(identity)
+        if len(selected) >= top_k:
+            break
+    return selected, primary
 
 
 def _rank_by_token_overlap(news_items: list[str], query: str) -> list[str]:
@@ -249,30 +285,22 @@ def hybrid_retrieve_news(stock_code: str, query: str, top_k: int = 5) -> str:
     # Rank the complete bounded stock corpus lexically.  Dense retrieval is a
     # fallback/fill path because the current remote snapshot showed materially
     # better Recall and Precision for stock-scoped title BM25.
-    lexical_query = expand_finance_query(query)
     lexical_corpus = list(dict.fromkeys(live_items + scoped_lexical_items))
-    bm25 = SimpleBM25(lexical_corpus)
-    bm25_ranked = _unique_bm25_ranking(bm25, lexical_corpus, lexical_query)
-    selected: list[tuple[str, float | None]] = []
-    selected_facets: set[str] = set()
-    facets = finance_query_facets(query)
-    if len(facets) > 1 or (facets and facets[0] != lexical_query):
-        for facet in facets:
-            for document, score in _unique_bm25_ranking(bm25, lexical_corpus, facet):
-                identity = _document_identity(document)
-                if identity not in selected_facets and finance_title_matches(document, facet):
-                    selected.append((document, score))
-                    selected_facets.add(identity)
-                    break
-            if len(selected) >= top_k:
-                break
-    for document, score in bm25_ranked:
-        identity = _document_identity(document)
-        if identity not in selected_facets:
-            selected.append((document, score))
-            selected_facets.add(identity)
-        if len(selected) >= top_k:
-            break
+    news_corpus = [item for item in lexical_corpus if not _is_official_announcement(item)]
+    announcement_corpus = [item for item in lexical_corpus if _is_official_announcement(item)]
+    selected, bm25_ranked = _select_faceted_bm25(news_corpus, query, top_k)
+    if len(selected) < top_k:
+        announcement_selected, announcement_ranked = _select_faceted_bm25(
+            announcement_corpus,
+            query,
+            top_k - len(selected),
+        )
+        existing_ids = {_document_identity(item) for item, _ in selected}
+        for item, score in announcement_selected:
+            if _document_identity(item) not in existing_ids:
+                selected.append((item, score))
+                existing_ids.add(_document_identity(item))
+        bm25_ranked.extend(announcement_ranked)
     selected_ids = {_document_identity(item) for item, _ in selected}
     semantic_items: list[str] = []
     if len(selected) < top_k:

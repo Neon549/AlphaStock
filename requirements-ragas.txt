@@ -1,0 +1,7 @@
+# Keep RAGAS isolated from the production LangChain runtime.
+# Python 3.13 cannot install the project's historical ragas==0.1.21 stack.
+ragas>=0.2,<0.3
+datasets>=3,<4
+langchain-openai>=0.2,<0.4
+python-dotenv
+requests
