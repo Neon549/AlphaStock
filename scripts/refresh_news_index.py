@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import psycopg2
+import psycopg2.pool
 from dotenv import dotenv_values
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -27,7 +28,10 @@ def _remote_dsn(port: int) -> str:
     """Build a tunnel DSN without printing or persisting the password."""
 
     config = dotenv_values(ROOT / ".env")
-    raw_dsn = os.getenv("POSTGRES_DSN") or config.get("POSTGRES_DSN")
+    # ``rag.news_indexer`` imports ``db`` before this function runs, and
+    # ``db.py`` may load the local .env.pgvector override into os.environ.
+    # The project .env is the explicit source for the tunnel credentials here.
+    raw_dsn = config.get("POSTGRES_DSN") or os.getenv("POSTGRES_DSN")
     if not raw_dsn:
         raise RuntimeError("POSTGRES_DSN is required")
     info = psycopg2.extensions.parse_dsn(raw_dsn)
@@ -46,13 +50,20 @@ def _stock_list(args: argparse.Namespace) -> list[tuple[str, str]]:
             code = code.strip()
             if not code:
                 continue
+            if code.isdigit():
+                code = code.zfill(6)
             selected.append((code, by_code.get(code, code)))
         return selected
     if args.all_existing:
         with psycopg2.connect(_remote_dsn(args.port), connect_timeout=8) as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT DISTINCT stock_code, stock_name FROM news_vectors ORDER BY stock_code")
-                existing = [(str(code), str(name)) for code, name in cur.fetchall()]
+                existing = []
+                for code, name in cur.fetchall():
+                    normalized = str(code).strip()
+                    if normalized.isdigit():
+                        normalized = normalized.zfill(6)
+                    existing.append((normalized, str(name)))
         merged = dict(existing)
         merged.update(by_code)
         return sorted(merged.items())
@@ -60,6 +71,9 @@ def _stock_list(args: argparse.Namespace) -> list[tuple[str, str]]:
 
 
 def main() -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=int(os.getenv("RAG_NEWS_DB_PORT", "15432")))
     parser.add_argument("--stocks", help="comma-separated stock codes; defaults to WATCH_LIST")
@@ -77,23 +91,35 @@ def main() -> int:
     import db
 
     db.POSTGRES_DSN = dsn
-    db._pool = None
-    before = get_stats()
-    started_at = datetime.now(timezone.utc).isoformat()
-    print(json.dumps({"event": "refresh_started", "started_at": started_at, "stocks": len(stocks), "before": before}, ensure_ascii=False), flush=True)
+    # A single forwarded PostgreSQL connection is much more reliable over a
+    # consumer SSH tunnel than the application's eager two-connection pool.
+    # This pool is process-local and does not change production service limits.
+    db._pool = psycopg2.pool.ThreadedConnectionPool(
+        minconn=1,
+        maxconn=1,
+        dsn=dsn,
+        connect_timeout=20,
+    )
+    try:
+        before = get_stats()
+        started_at = datetime.now(timezone.utc).isoformat()
+        print(json.dumps({"event": "refresh_started", "started_at": started_at, "stocks": len(stocks), "before": before}, ensure_ascii=False), flush=True)
 
-    added = bulk_index(stocks, limit_per_stock=max(1, args.limit_per_stock))
-    after = get_stats()
-    summary = {
-        "event": "refresh_finished",
-        "finished_at": datetime.now(timezone.utc).isoformat(),
-        "stocks": len(stocks),
-        "added_reported": added,
-        "before": before,
-        "after": after,
-        "delta_total_news": after.get("total_news", 0) - before.get("total_news", 0),
-    }
-    print(json.dumps(summary, ensure_ascii=False), flush=True)
+        added = bulk_index(stocks, limit_per_stock=max(1, args.limit_per_stock))
+        after = get_stats()
+        summary = {
+            "event": "refresh_finished",
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "stocks": len(stocks),
+            "added_reported": added,
+            "before": before,
+            "after": after,
+            "delta_total_news": after.get("total_news", 0) - before.get("total_news", 0),
+        }
+        print(json.dumps(summary, ensure_ascii=False), flush=True)
+    finally:
+        db._pool.closeall()
+        db._pool = None
     return 0
 
 

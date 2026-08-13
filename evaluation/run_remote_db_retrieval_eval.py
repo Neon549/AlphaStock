@@ -82,6 +82,8 @@ def load_remote_corpus(port: int) -> list[dict[str, Any]]:
         seen: set[tuple[str, str, str]] = set()
         for stock_code, title, stock_name, pub_time, date in cur.fetchall():
             stock_code = str(stock_code)
+            if not re.fullmatch(r"\d{6}", stock_code):
+                continue
             title = str(title or "").strip()
             key = (stock_code, title, str(date))
             if not title or key in seen:

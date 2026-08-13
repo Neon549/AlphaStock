@@ -19,6 +19,7 @@ from typing import Any
 from datetime import datetime, timedelta
 
 import schedule
+from psycopg2.extras import execute_values
 
 from db import get_conn
 
@@ -166,22 +167,35 @@ def _insert_news_batch(items: list[dict]) -> int:
     if not items:
         return 0
 
-    texts = [it["full_text"] for it in items]
-    embeddings = _embed(texts)
-
-    added = 0
+    identified = [(_news_id(item["stock_code"], item["title"]), item) for item in items]
     with get_conn() as conn:
         with conn.cursor() as cur:
-            for item, emb in zip(items, embeddings):
-                doc_id = _news_id(item["stock_code"], item["title"])
-                cur.execute(
-                    """
-                    INSERT INTO news_vectors
-                        (id, stock_code, stock_name, title, full_text,
-                         pub_time, date, embedding)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s::vector)
-                    ON CONFLICT (id) DO NOTHING
-                    """,
+            cur.execute(
+                "SELECT id FROM news_vectors WHERE id = ANY(%s)",
+                ([doc_id for doc_id, _ in identified],),
+            )
+            existing_ids = {row[0] for row in cur.fetchall()}
+
+    pending = [(doc_id, item) for doc_id, item in identified if doc_id not in existing_ids]
+    if not pending:
+        return 0
+
+    texts = [item["full_text"] for _, item in pending]
+    embeddings = _embed(texts)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            inserted = execute_values(
+                cur,
+                """
+                INSERT INTO news_vectors
+                    (id, stock_code, stock_name, title, full_text,
+                     pub_time, date, embedding)
+                VALUES %s
+                ON CONFLICT (id) DO NOTHING
+                RETURNING id
+                """,
+                [
                     (
                         doc_id,
                         item["stock_code"],
@@ -191,12 +205,15 @@ def _insert_news_batch(items: list[dict]) -> int:
                         item["pub_time"],
                         item["date"] or None,
                         str(emb),  # pgvector 接受 '[0.1, 0.2, ...]' 格式
-                    ),
-                )
-                if cur.rowcount:
-                    added += 1
+                    )
+                    for (doc_id, item), emb in zip(pending, embeddings)
+                ],
+                template="(%s, %s, %s, %s, %s, %s, %s, %s::vector)",
+                page_size=100,
+                fetch=True,
+            )
         conn.commit()
-    return added
+    return len(inserted)
 
 
 # ── 功能一：批量入库 ──────────────────────────────────────────────────
@@ -327,7 +344,7 @@ def retrieve_news(
         sql = """
             SELECT title, stock_name, pub_time
             FROM news_vectors
-            WHERE date >= %s
+            WHERE date >= %s AND stock_code ~ '^[0-9]{6}$'
             ORDER BY embedding <=> %s::vector
             LIMIT %s
         """
@@ -368,10 +385,21 @@ def get_stats() -> dict:
         }
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM news_vectors")
-            total = cur.fetchone()[0]
+            cur.execute(
+                """
+                SELECT
+                    COUNT(*),
+                    COUNT(*) FILTER (WHERE stock_code ~ '^[0-9]{6}$'),
+                    COUNT(DISTINCT stock_code) FILTER (WHERE stock_code ~ '^[0-9]{6}$')
+                FROM news_vectors
+                """
+            )
+            total, valid_total, indexed_stocks = cur.fetchone()
     return {
         "total_news": total,
+        "valid_news": valid_total,
+        "invalid_stock_code_news": total - valid_total,
+        "indexed_stocks": indexed_stocks,
         "expire_days": NEWS_EXPIRE_DAYS,
         "watch_stocks": len(WATCH_LIST),
         "stream_running": _stream_running,
