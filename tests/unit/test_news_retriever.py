@@ -24,35 +24,53 @@ class NewsRetrieverTests(unittest.TestCase):
         self.assertLess(order.index("lexical-only"), order.index("semantic-only"))
 
     @patch("rag.retriever.retrieve_news")
+    @patch("rag.retriever.retrieve_news_corpus")
     @patch("rag.retriever.get_stock_news")
-    def test_hybrid_retrieval_fuses_live_and_pgvector_candidates(self, get_news, retrieve_news):
+    def test_hybrid_retrieval_fuses_live_and_pgvector_candidates(self, get_news, corpus, retrieve_news):
         get_news.invoke.return_value = "茅台业绩增长\n行业政策支持"
+        corpus.return_value = ["【贵州茅台 | 2026-08-01】茅台业绩增长"]
         retrieve_news.return_value = "【贵州茅台 | 2026-08-01】茅台业绩增长"
 
-        result = hybrid_retrieve_news("600519", "业绩", top_k=3)
+        result = hybrid_retrieve_news("600519", "利润", top_k=3)
 
         self.assertIn("茅台业绩增长", result)
-        retrieve_news.assert_called_once_with(query="业绩", stock_code="600519", k=20, days=7)
+        retrieve_news.assert_called_once_with(query="利润", stock_code="600519", k=20, days=30)
 
     @patch("rag.retriever.retrieve_news")
+    @patch("rag.retriever.retrieve_news_corpus")
     @patch("rag.retriever.get_stock_news")
-    def test_hybrid_retrieval_returns_safe_empty_message_when_both_sources_fail(self, get_news, retrieve_news):
+    def test_scoped_bm25_skips_embedding_when_top_k_is_satisfied(self, get_news, corpus, retrieve_news):
+        get_news.invoke.return_value = ""
+        corpus.return_value = ["【工业富联 | 2026-08-12】AI服务器需求增长"]
+
+        result = hybrid_retrieve_news("601138", "AI服务器需求", top_k=1)
+
+        self.assertIn("AI服务器需求增长", result)
+        retrieve_news.assert_not_called()
+
+    @patch("rag.retriever.retrieve_news")
+    @patch("rag.retriever.retrieve_news_corpus")
+    @patch("rag.retriever.get_stock_news")
+    def test_hybrid_retrieval_returns_safe_empty_message_when_both_sources_fail(self, get_news, corpus, retrieve_news):
         get_news.invoke.return_value = "[TOOL_ERROR] source unavailable"
+        corpus.return_value = []
         retrieve_news.return_value = "最近7天内未找到相关新闻"
 
         self.assertEqual(hybrid_retrieve_news("600519", "业绩"), "暂无可验证的相关新闻")
 
     @patch("control_plane.observability.record_rag_event")
     @patch("rag.retriever.retrieve_news")
+    @patch("rag.retriever.retrieve_news_corpus")
     @patch("rag.retriever.get_stock_news")
-    def test_hybrid_retrieval_records_hashes_and_rrf_scores_only(self, get_news, retrieve_news, record):
+    def test_hybrid_retrieval_records_hashes_and_rrf_scores_only(self, get_news, corpus, retrieve_news, record):
         get_news.invoke.return_value = "私有新闻标题"
+        corpus.return_value = ["【贵州茅台 | 2026-08-01】业绩增长"]
         retrieve_news.return_value = "【贵州茅台 | 2026-08-01】业绩增长"
 
-        hybrid_retrieve_news("600519", "联系电话 13800138000", top_k=2)
+        hybrid_retrieve_news("600519", "业绩 联系电话 13800138000", top_k=2)
 
         retrieval_event = record.call_args_list[0].args[1]
-        self.assertEqual(retrieval_event["query"]["query_preview"], "联系电话 [phone]")
+        self.assertEqual(retrieval_event["query"]["query_preview"], "业绩 联系电话 [phone]")
         self.assertTrue(retrieval_event["rerank"]["applied"])
         self.assertIn("news_sha256", retrieval_event["top_k"][0])
         self.assertNotIn("私有新闻标题", str(retrieval_event))

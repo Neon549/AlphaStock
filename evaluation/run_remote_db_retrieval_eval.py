@@ -25,6 +25,7 @@ from evaluation.rag_snapshot_retrievers import (
     build_hybrid_rrf_retriever,
     build_reranked_retriever,
 )
+from rag.news_indexer import news_evidence_snippet
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -73,14 +74,14 @@ def load_remote_corpus(port: int) -> list[dict[str, Any]]:
     with _remote_connection(port) as conn, conn.cursor() as cur:
         cur.execute(
             """
-            SELECT stock_code, title, stock_name, pub_time, date
+            SELECT stock_code, title, stock_name, pub_time, date, full_text
             FROM news_vectors
             ORDER BY date DESC, pub_time DESC
             """
         )
         rows = []
         seen: set[tuple[str, str, str]] = set()
-        for stock_code, title, stock_name, pub_time, date in cur.fetchall():
+        for stock_code, title, stock_name, pub_time, date, full_text in cur.fetchall():
             stock_code = str(stock_code)
             if not re.fullmatch(r"\d{6}", stock_code):
                 continue
@@ -92,7 +93,7 @@ def load_remote_corpus(port: int) -> list[dict[str, Any]]:
             evidence_id = "news:" + hashlib.sha256(
                 f"{stock_code}|{date}|{pub_time}|{title}".encode("utf-8")
             ).hexdigest()[:24]
-            text = f"[{pub_time}] {stock_name}({stock_code}) {title}"
+            text = str(full_text or f"[{pub_time}] {stock_name}({stock_code}) {title}")
             rows.append(
                 {
                     "evidence_id": evidence_id,
@@ -275,7 +276,14 @@ def run(*, port: int, embedding_model: str, reranker_model: str, top_k: int, can
         query = case["question"]
         for method, retrieve in methods.items():
             retrieved = retrieve(case["stock_code"], query)
-            contexts = [str(item["content"]) for item in retrieved]
+            contexts = [
+                news_evidence_snippet(
+                    str(item.get("title", "")),
+                    str(item["content"]),
+                    query,
+                )
+                for item in retrieved
+            ]
             details[method].append(
                 {
                     "stock_code": case["stock_code"],

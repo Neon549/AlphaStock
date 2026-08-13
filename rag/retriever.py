@@ -16,9 +16,11 @@ from collections import defaultdict
 import jieba
 from langchain_core.tools import tool
 
-from rag.news_indexer import retrieve_news
+from rag.news_indexer import retrieve_news, retrieve_news_corpus
 from tools.akshare_tools import get_stock_news
 
+
+NEWS_RETRIEVAL_DAYS = 30
 
 _FINANCE_QUERY_ALIASES: tuple[tuple[str, str], ...] = (
     ("AI服务器", "人工智能服务器 AI server 算力服务器"),
@@ -137,7 +139,12 @@ def _rank_by_token_overlap(news_items: list[str], query: str) -> list[str]:
 
 def _pgvector_candidates(stock_code: str, query: str, top_k: int) -> list[str]:
     try:
-        result = retrieve_news(query=query, stock_code=stock_code, k=top_k, days=7)
+        result = retrieve_news(
+            query=query,
+            stock_code=stock_code,
+            k=top_k,
+            days=NEWS_RETRIEVAL_DAYS,
+        )
         if "[TOOL_ERROR]" in result or "未找到相关新闻" in result:
             return []
         return _lines(result)
@@ -147,46 +154,68 @@ def _pgvector_candidates(stock_code: str, query: str, top_k: int) -> list[str]:
         return []
 
 
+def _scoped_lexical_candidates(stock_code: str) -> list[str]:
+    try:
+        return retrieve_news_corpus(
+            stock_code,
+            days=NEWS_RETRIEVAL_DAYS,
+            limit=500,
+        )
+    except Exception:
+        return []
+
+
 def hybrid_retrieve_news(stock_code: str, query: str, top_k: int = 5) -> str:
-    """Retrieve current news with pgvector semantic candidates and BM25 + RRF."""
+    """Retrieve stock-scoped BM25 evidence with lazy semantic fallback."""
 
     raw_news = get_stock_news.invoke({"symbol": stock_code})
     if "[TOOL_ERROR]" in (raw_news or ""):
         raw_news = ""
 
     live_items = _lines(raw_news)
-    semantic_candidate_k = max(top_k * 4, 20)
-    semantic_items = _pgvector_candidates(stock_code, query, semantic_candidate_k)
-    if not live_items and not semantic_items:
-        _record_news_retrieval(stock_code, query, top_k, [], 0, 0, rerank_applied=False)
-        return "暂无可验证的相关新闻"
+    scoped_lexical_items = _scoped_lexical_candidates(stock_code)
     if not query:
-        selected = (live_items or semantic_items)[:top_k]
+        selected = (live_items or scoped_lexical_items)[:top_k]
         _record_news_retrieval(
             stock_code, query, top_k, [(item, None) for item in selected],
-            len(live_items), len(semantic_items), rerank_applied=False,
+            len(live_items), 0,
+            lexical_candidate_count=len(scoped_lexical_items), rerank_applied=False,
         )
-        return "\n".join(selected)
+        return "\n".join(selected) or "暂无可验证的相关新闻"
 
-    # pgvector results are already semantically ranked.  Add current live
-    # items ranked by query overlap so fresh news is not hidden by index lag.
+    # Rank the complete bounded stock corpus lexically.  Dense retrieval is a
+    # fallback/fill path because the current remote snapshot showed materially
+    # better Recall and Precision for stock-scoped title BM25.
     lexical_query = expand_finance_query(query)
-    vector_ranked = list(dict.fromkeys(semantic_items + _rank_by_token_overlap(live_items, lexical_query)))
-    lexical_corpus = list(dict.fromkeys(live_items + semantic_items))
+    lexical_corpus = list(dict.fromkeys(live_items + scoped_lexical_items))
     bm25 = SimpleBM25(lexical_corpus)
     bm25_ranked = [
-        lexical_corpus[index]
+        (lexical_corpus[index], score)
         for index, score in bm25.search(lexical_query, k=len(lexical_corpus))
         if score > 0
     ]
-    merged = _rrf_ranked(
-        vector_ranked,
-        bm25_ranked or lexical_corpus,
-        vector_weight=1.0,
-        bm25_weight=2.0,
+    selected = bm25_ranked[:top_k]
+    selected_ids = {item for item, _ in selected}
+    semantic_items: list[str] = []
+    if len(selected) < top_k:
+        semantic_candidate_k = max(top_k * 4, 20)
+        semantic_items = _pgvector_candidates(stock_code, query, semantic_candidate_k)
+        for item in semantic_items:
+            if item not in selected_ids:
+                selected.append((item, None))
+                selected_ids.add(item)
+            if len(selected) >= top_k:
+                break
+    _record_news_retrieval(
+        stock_code,
+        query,
+        top_k,
+        selected,
+        len(live_items),
+        len(semantic_items),
+        lexical_candidate_count=len(scoped_lexical_items),
+        rerank_applied=bool(bm25_ranked),
     )
-    selected = merged[:top_k]
-    _record_news_retrieval(stock_code, query, top_k, selected, len(live_items), len(semantic_items), rerank_applied=True)
     return "\n".join(item for item, _ in selected) or "暂无可验证的相关新闻"
 
 
@@ -198,6 +227,7 @@ def _record_news_retrieval(
     live_candidate_count: int,
     semantic_candidate_count: int,
     *,
+    lexical_candidate_count: int = 0,
     rerank_applied: bool,
 ) -> None:
     """Write RAG metadata only; headlines and raw query never leave the process."""
@@ -227,10 +257,11 @@ def _record_news_retrieval(
                 "window_days": 7,
                 "live_candidate_count": live_candidate_count,
                 "semantic_candidate_count": semantic_candidate_count,
+                "lexical_candidate_count": lexical_candidate_count,
             },
             "rerank": {
                 "applied": rerank_applied,
-                "method": "weighted_rrf_bm25_2x" if rerank_applied else None,
+                "method": "scoped_title_bm25_semantic_fallback" if rerank_applied else None,
             },
         })
         record_rag_event("citation_validation", {

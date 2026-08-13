@@ -105,13 +105,19 @@ def main() -> int:
         started_at = datetime.now(timezone.utc).isoformat()
         print(json.dumps({"event": "refresh_started", "started_at": started_at, "stocks": len(stocks), "before": before}, ensure_ascii=False), flush=True)
 
-        added = bulk_index(stocks, limit_per_stock=max(1, args.limit_per_stock))
+        index_result = bulk_index(
+            stocks,
+            limit_per_stock=max(1, args.limit_per_stock),
+            return_stats=True,
+        )
         after = get_stats()
         summary = {
             "event": "refresh_finished",
             "finished_at": datetime.now(timezone.utc).isoformat(),
             "stocks": len(stocks),
-            "added_reported": added,
+            "added_reported": index_result["added"],
+            "updated_reported": index_result["updated"],
+            "embedded_reported": index_result["embedded"],
             "before": before,
             "after": after,
             "delta_total_news": after.get("total_news", 0) - before.get("total_news", 0),
