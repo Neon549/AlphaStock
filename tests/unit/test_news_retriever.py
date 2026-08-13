@@ -1,7 +1,14 @@
 import unittest
 from unittest.mock import patch
 
-from rag.retriever import _rrf_ranked, expand_finance_query, hybrid_retrieve_news
+from rag.retriever import (
+    _document_identity,
+    _rrf_ranked,
+    expand_finance_query,
+    finance_query_facets,
+    finance_title_matches,
+    hybrid_retrieve_news,
+)
 
 
 class NewsRetrieverTests(unittest.TestCase):
@@ -22,6 +29,32 @@ class NewsRetrieverTests(unittest.TestCase):
 
         order = [item for item, _ in ranked]
         self.assertLess(order.index("lexical-only"), order.index("semantic-only"))
+
+    def test_announcement_chunks_share_one_document_identity(self):
+        first = "公告：回购进展 内容：第一段 来源：巨潮资讯 链接：https://example.test/a.pdf"
+        second = "公告：回购进展 内容：第二段 来源：巨潮资讯 链接：https://example.test/a.pdf"
+
+        self.assertEqual(_document_identity(first), _document_identity(second))
+
+    def test_live_and_persisted_news_with_same_title_are_deduplicated(self):
+        live = "【2026-08-12】AI服务器需求增长"
+        persisted = "【工业富联 | 2026-08-12】AI服务器需求增长"
+
+        self.assertEqual(_document_identity(live), _document_identity(persisted))
+
+    def test_multi_intent_query_builds_separate_facets(self):
+        facets = finance_query_facets("招商银行近期有什么人事变动或资金流动消息？")
+
+        self.assertEqual(len(facets), 2)
+        self.assertTrue(any("离任" in facet for facet in facets))
+        self.assertTrue(any("主力资金" in facet for facet in facets))
+
+    def test_business_facet_does_not_select_unrelated_announcement_body(self):
+        facet = "新公司 子公司 注册资本 成立 业务扩展 合作 订单 中标"
+        document = "公告：关于回购公司股份的进展公告 内容：公司设立过子公司"
+
+        self.assertFalse(finance_title_matches(document, facet))
+        self.assertTrue(finance_title_matches("汇川技术成立轨道交通设备公司", facet))
 
     @patch("rag.retriever.retrieve_news")
     @patch("rag.retriever.retrieve_news_corpus")

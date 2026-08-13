@@ -26,6 +26,7 @@ from evaluation.rag_snapshot_retrievers import (
     build_reranked_retriever,
 )
 from rag.news_indexer import news_evidence_snippet
+from rag.retriever import finance_query_facets, finance_title_matches
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -70,30 +71,47 @@ def _remote_connection(port: int):
     )
 
 
-def load_remote_corpus(port: int) -> list[dict[str, Any]]:
+def load_remote_corpus(
+    port: int,
+    *,
+    source_kinds: set[str] | None = None,
+    evidence_mode: str = "online",
+) -> list[dict[str, Any]]:
     with _remote_connection(port) as conn, conn.cursor() as cur:
         cur.execute(
             """
-            SELECT stock_code, title, stock_name, pub_time, date, full_text
+            SELECT stock_code, title, stock_name, pub_time, date, full_text,
+                   COALESCE(source_kind, 'news'), source_url, publisher
             FROM news_vectors
             ORDER BY date DESC, pub_time DESC
             """
         )
         rows = []
-        seen: set[tuple[str, str, str]] = set()
-        for stock_code, title, stock_name, pub_time, date, full_text in cur.fetchall():
+        seen: set[tuple[str, str, str, str, str]] = set()
+        for stock_code, title, stock_name, pub_time, date, full_text, source_kind, source_url, publisher in cur.fetchall():
             stock_code = str(stock_code)
             if not re.fullmatch(r"\d{6}", stock_code):
                 continue
+            source_kind = str(source_kind or "news")
+            if source_kinds and source_kind not in source_kinds:
+                continue
             title = str(title or "").strip()
-            key = (stock_code, title, str(date))
+            key = (stock_code, title, str(date), source_kind, str(full_text or ""))
             if not title or key in seen:
                 continue
             seen.add(key)
-            evidence_id = "news:" + hashlib.sha256(
-                f"{stock_code}|{date}|{pub_time}|{title}".encode("utf-8")
+            evidence_id = f"{source_kind}:" + hashlib.sha256(
+                f"{stock_code}|{date}|{pub_time}|{title}|{full_text}".encode("utf-8")
             ).hexdigest()[:24]
-            text = str(full_text or f"[{pub_time}] {stock_name}({stock_code}) {title}")
+            title_text = f"[{pub_time}] {stock_name}({stock_code}) {title}"
+            if evidence_mode == "title":
+                text = title_text
+            elif evidence_mode == "full":
+                text = str(full_text or title_text)
+            else:
+                # Mirrors the online path: news headlines protect precision,
+                # while official disclosure chunks expose primary-source facts.
+                text = str(full_text or title_text) if source_kind == "announcement" else title_text
             rows.append(
                 {
                     "evidence_id": evidence_id,
@@ -104,9 +122,83 @@ def load_remote_corpus(port: int) -> list[dict[str, Any]]:
                     "title": title,
                     "pub_time": str(pub_time or ""),
                     "date": str(date or ""),
+                    "source_kind": source_kind,
+                    "source_url": str(source_url or ""),
+                    "publisher": str(publisher or ""),
                 }
             )
     return rows
+
+
+def _dedupe_source_documents(ranked: list[dict[str, Any]], top_k: int) -> list[dict[str, Any]]:
+    """Keep the best query-ranked chunk for each source document."""
+
+    output: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in ranked:
+        identity = _item_identity(item)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        output.append(item)
+        if len(output) >= top_k:
+            break
+    return output
+
+
+def _item_identity(item: dict[str, Any]) -> str:
+    source_url = str(item.get("source_url") or "")
+    if source_url:
+        return f"source:{source_url}"
+    return f"{item.get('source_kind', 'news')}:title:{item.get('title', '')}"
+
+
+def _subset_bm25(
+    corpus: list[dict[str, Any]],
+    stock_code: str,
+    query: str,
+    *,
+    top_k: int,
+) -> list[dict[str, Any]]:
+    scoped = [item for item in corpus if item["stock_code"] == str(stock_code)]
+    ranked = build_bm25_retriever(scoped)(expand_query(query), top_k=len(scoped))
+    return _dedupe_source_documents(ranked, top_k)
+
+
+def _faceted_bm25(
+    corpus: list[dict[str, Any]],
+    stock_code: str,
+    query: str,
+    *,
+    top_k: int,
+) -> list[dict[str, Any]]:
+    scoped = [item for item in corpus if item["stock_code"] == str(stock_code)]
+    retriever = build_bm25_retriever(scoped)
+    primary = _dedupe_source_documents(
+        retriever(expand_query(query), top_k=len(scoped)),
+        len(scoped),
+    )
+    output: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    facets = finance_query_facets(query)
+    for facet in facets:
+        ranked = _dedupe_source_documents(retriever(facet, top_k=len(scoped)), len(scoped))
+        for item in ranked:
+            identity = _item_identity(item)
+            if identity not in seen and finance_title_matches(str(item.get("title", "")), facet):
+                output.append(item)
+                seen.add(identity)
+                break
+        if len(output) >= top_k:
+            return output
+    for item in primary:
+        identity = _item_identity(item)
+        if identity not in seen:
+            output.append(item)
+            seen.add(identity)
+        if len(output) >= top_k:
+            break
+    return output
 
 
 def load_embedding_backend(name: str):
@@ -232,44 +324,73 @@ def _mean(values: list[float]) -> float:
     return round(sum(values) / len(values), 4) if values else 0.0
 
 
-def run(*, port: int, embedding_model: str, reranker_model: str, top_k: int, candidate_k: int) -> dict[str, Any]:
-    corpus = load_remote_corpus(port)
+def run(
+    *,
+    port: int,
+    embedding_model: str,
+    reranker_model: str,
+    top_k: int,
+    candidate_k: int,
+    source_kinds: set[str] | None = None,
+    evidence_mode: str = "online",
+    bm25_only: bool = False,
+) -> dict[str, Any]:
+    corpus = load_remote_corpus(
+        port,
+        source_kinds=source_kinds,
+        evidence_mode=evidence_mode,
+    )
     print(f"remote_corpus={len(corpus)}", flush=True)
-    embedding, query_embedding, embedding_meta = load_embedding_backend(embedding_model)
-    vectors = embedding([item["content"] for item in corpus])
-    print(f"dense_vectors={len(vectors)} dimension={len(vectors[0]) if vectors else 0}", flush=True)
-
     bm25_global = build_bm25_retriever(corpus)
-    dense_global = build_dense_retriever_from_vectors(corpus, vectors, query_embedding)
-    hybrid_global = build_hybrid_rrf_retriever(corpus, bm25_global, dense_global)
     methods = {
-        "bm25_global_expanded": lambda stock_code, query: bm25_global(expand_query(query), top_k=top_k),
-        "dense_global": lambda stock_code, query: dense_global(query, top_k=top_k),
-        "hybrid_global": lambda stock_code, query: hybrid_global(query, top_k=top_k),
-        "bm25_scoped_expanded": lambda stock_code, query: _subset_retriever(corpus, vectors, query_embedding, stock_code, query, "bm25_scoped_expanded", top_k=top_k),
-        "dense_scoped": lambda stock_code, query: _subset_retriever(corpus, vectors, query_embedding, stock_code, query, "dense_scoped", top_k=top_k),
-        "hybrid_scoped": lambda stock_code, query: _subset_retriever(corpus, vectors, query_embedding, stock_code, query, "hybrid_scoped", top_k=top_k),
+        "bm25_global_expanded": lambda stock_code, query: _dedupe_source_documents(
+            bm25_global(expand_query(query), top_k=len(corpus)), top_k
+        ),
+        "bm25_scoped_expanded": lambda stock_code, query: _subset_bm25(
+            corpus, stock_code, query, top_k=top_k
+        ),
+        "bm25_scoped_faceted": lambda stock_code, query: _faceted_bm25(
+            corpus, stock_code, query, top_k=top_k
+        ),
     }
+    embedding_meta: dict[str, Any] = {"skipped": True}
+    rerank_meta: dict[str, Any] = {"skipped": True}
+    vectors: list[list[float]] = []
+    embedding = dense_global = hybrid_global = rerank = None
+    if not bm25_only:
+        embedding, query_embedding, embedding_meta = load_embedding_backend(embedding_model)
+        vectors = embedding([item["content"] for item in corpus])
+        print(f"dense_vectors={len(vectors)} dimension={len(vectors[0]) if vectors else 0}", flush=True)
+        dense_global = build_dense_retriever_from_vectors(corpus, vectors, query_embedding)
+        hybrid_global = build_hybrid_rrf_retriever(corpus, bm25_global, dense_global)
+        methods.update(
+            {
+                "dense_global": lambda stock_code, query: dense_global(query, top_k=top_k),
+                "hybrid_global": lambda stock_code, query: hybrid_global(query, top_k=top_k),
+                "dense_scoped": lambda stock_code, query: _subset_retriever(corpus, vectors, query_embedding, stock_code, query, "dense_scoped", top_k=top_k),
+                "hybrid_scoped": lambda stock_code, query: _subset_retriever(corpus, vectors, query_embedding, stock_code, query, "hybrid_scoped", top_k=top_k),
+            }
+        )
 
-    rerank, rerank_meta = load_reranker(reranker_model)
-    reranked_global = build_reranked_retriever(hybrid_global, rerank, candidate_k=candidate_k)
-    methods["hybrid_global_reranked"] = lambda stock_code, query: reranked_global(query, top_k=top_k)
-    methods["hybrid_scoped_reranked"] = lambda stock_code, query: _subset_reranked_retriever(
-        corpus, vectors, query_embedding, rerank, stock_code, query,
-        top_k=top_k, candidate_k=candidate_k,
-    )
-    methods["hybrid_scoped_reranked_preserve3"] = lambda stock_code, query: _subset_reranked_retriever(
-        corpus, vectors, query_embedding, rerank, stock_code, query,
-        top_k=top_k, candidate_k=candidate_k, preserve_k=3,
-    )
-    methods["hybrid_scoped_bm25_2x"] = lambda stock_code, query: _subset_weighted_hybrid(
-        corpus, vectors, query_embedding, stock_code, query,
-        top_k=top_k, bm25_weight=2.0, dense_weight=1.0,
-    )
-    methods["hybrid_scoped_bm25_3x"] = lambda stock_code, query: _subset_weighted_hybrid(
-        corpus, vectors, query_embedding, stock_code, query,
-        top_k=top_k, bm25_weight=3.0, dense_weight=1.0,
-    )
+        rerank, rerank_meta = load_reranker(reranker_model)
+        reranked_global = build_reranked_retriever(hybrid_global, rerank, candidate_k=candidate_k)
+        methods["hybrid_global_reranked"] = lambda stock_code, query: reranked_global(query, top_k=top_k)
+        methods["hybrid_scoped_reranked"] = lambda stock_code, query: _subset_reranked_retriever(
+            corpus, vectors, query_embedding, rerank, stock_code, query,
+            top_k=top_k, candidate_k=candidate_k,
+        )
+        methods["hybrid_scoped_reranked_preserve3"] = lambda stock_code, query: _subset_reranked_retriever(
+            corpus, vectors, query_embedding, rerank, stock_code, query,
+            top_k=top_k, candidate_k=candidate_k, preserve_k=3,
+        )
+        methods["hybrid_scoped_bm25_2x"] = lambda stock_code, query: _subset_weighted_hybrid(
+            corpus, vectors, query_embedding, stock_code, query,
+            top_k=top_k, bm25_weight=2.0, dense_weight=1.0,
+        )
+        methods["hybrid_scoped_bm25_3x"] = lambda stock_code, query: _subset_weighted_hybrid(
+            corpus, vectors, query_embedding, stock_code, query,
+            top_k=top_k, bm25_weight=3.0, dense_weight=1.0,
+        )
 
     details: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for case_index, case in enumerate(EVAL_DATASET, 1):
@@ -302,6 +423,15 @@ def run(*, port: int, embedding_model: str, reranker_model: str, top_k: int, can
         "corpus_rows": len(corpus),
         "top_k": top_k,
         "candidate_k": candidate_k,
+        "source_kinds": sorted(source_kinds) if source_kinds else ["all"],
+        "source_counts": dict(
+            sorted(
+                (kind, sum(1 for item in corpus if item["source_kind"] == kind))
+                for kind in {item["source_kind"] for item in corpus}
+            )
+        ),
+        "evidence_mode": evidence_mode,
+        "bm25_only": bm25_only,
         "embedding_runtime": embedding_meta,
         "reranker_runtime": rerank_meta,
         "results": {},
@@ -350,14 +480,21 @@ def main() -> int:
     parser.add_argument("--reranker-model", default=DEFAULT_RERANKER_MODEL)
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--candidate-k", type=int, default=50)
+    parser.add_argument("--source-kinds", default="", help="comma-separated source kinds; empty means all")
+    parser.add_argument("--evidence-mode", choices=("online", "title", "full"), default="online")
+    parser.add_argument("--bm25-only", action="store_true", help="skip dense embedding and reranker loading")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     args = parser.parse_args()
+    source_kinds = {value.strip() for value in args.source_kinds.split(",") if value.strip()}
     report = run(
         port=args.port,
         embedding_model=args.embedding_model,
         reranker_model=args.reranker_model,
         top_k=args.top_k,
         candidate_k=args.candidate_k,
+        source_kinds=source_kinds or None,
+        evidence_mode=args.evidence_mode,
+        bm25_only=args.bm25_only,
     )
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

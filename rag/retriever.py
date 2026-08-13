@@ -38,6 +38,19 @@ _FINANCE_QUERY_ALIASES: tuple[tuple[str, str], ...] = (
     ("资金流入", "资金流入 主力资金 净流入"),
 )
 
+_FINANCE_QUERY_FACETS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("提价", "价格", "调价"), "提价 调价 零售价 合同价 批价 上调 下调"),
+    (("业绩", "净利润", "营收"), "业绩 营业收入 净利润 归母净利润 同比增长 预告"),
+    (("分红", "派息", "利润分配"), "分红 派息 利润分配 现金红利 权益分派"),
+    (("人事", "董事长", "高管", "秘书", "任职"), "人事变动 离任 接任 辞职 聘任 任职资格 董事长 公司秘书"),
+    (("资金", "主力", "净流入", "净流出"), "资金流动 主力资金 净流入 净流出 特大单"),
+    (("回购",), "股份回购 回购金额 回购价格 回购进展"),
+    (("上市", "挂牌", "IPO", "H股"), "上市 挂牌 IPO H股 港交所 联交所"),
+    (("新公司", "业务扩展", "新业务", "合作", "订单"), "新公司 子公司 注册资本 成立 业务扩展 合作 订单 中标"),
+    (("大宗交易",), "大宗交易 成交额 折价率 block trade"),
+    (("重要动态",), "重要动态 大宗交易 光缆 海底电缆 业务进展 资金流动"),
+)
+
 
 def expand_finance_query(query: str) -> str:
     """Add high-signal finance synonyms for lexical retrieval only."""
@@ -48,6 +61,14 @@ def expand_finance_query(query: str) -> str:
         if keyword.lower() in lowered:
             expanded.append(aliases)
     return " ".join(dict.fromkeys(expanded))
+
+
+def finance_query_facets(query: str) -> list[str]:
+    """Turn multi-intent finance questions into focused lexical subqueries."""
+
+    value = query or ""
+    facets = [aliases for triggers, aliases in _FINANCE_QUERY_FACETS if any(term in value for term in triggers)]
+    return list(dict.fromkeys(facets)) or [expand_finance_query(value)]
 
 
 def _finance_tokens(value: str) -> list[str]:
@@ -125,6 +146,48 @@ def _lines(value: str) -> list[str]:
     return [line.strip() for line in (value or "").splitlines() if line.strip()]
 
 
+def _document_identity(document: str) -> str:
+    """Collapse multiple evidence chunks from the same official disclosure."""
+
+    link = re.search(r"链接：(\S+)", document or "")
+    if link:
+        return f"source:{link.group(1)}"
+    return f"title:{_document_title(document)}"
+
+
+def _document_title(document: str) -> str:
+    announcement = re.search(r"公告：(.*?)(?=\s内容：|\s来源：|$)", document or "")
+    if announcement:
+        return announcement.group(1).strip()
+    if "】" in (document or ""):
+        return document.split("】", 1)[1].strip()
+    return (document or "").strip()
+
+
+def finance_title_matches(title_or_document: str, facet: str) -> bool:
+    """Require a facet's high-signal term in the evidence title."""
+
+    title = _document_title(title_or_document).lower()
+    stopwords = {"公司", "业务", "动态", "消息", "相关", "近期", "重要"}
+    terms = [term.lower() for term in facet.split() if len(term) > 1 and term not in stopwords]
+    return any(term in title for term in terms)
+
+
+def _unique_bm25_ranking(bm25: SimpleBM25, corpus: list[str], query: str) -> list[tuple[str, float]]:
+    ranked: list[tuple[str, float]] = []
+    seen: set[str] = set()
+    for index, score in bm25.search(query, k=len(corpus)):
+        if score <= 0:
+            continue
+        document = corpus[index]
+        identity = _document_identity(document)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        ranked.append((document, score))
+    return ranked
+
+
 def _rank_by_token_overlap(news_items: list[str], query: str) -> list[str]:
     query_tokens = set(_finance_tokens(query))
     return [
@@ -189,21 +252,37 @@ def hybrid_retrieve_news(stock_code: str, query: str, top_k: int = 5) -> str:
     lexical_query = expand_finance_query(query)
     lexical_corpus = list(dict.fromkeys(live_items + scoped_lexical_items))
     bm25 = SimpleBM25(lexical_corpus)
-    bm25_ranked = [
-        (lexical_corpus[index], score)
-        for index, score in bm25.search(lexical_query, k=len(lexical_corpus))
-        if score > 0
-    ]
-    selected = bm25_ranked[:top_k]
-    selected_ids = {item for item, _ in selected}
+    bm25_ranked = _unique_bm25_ranking(bm25, lexical_corpus, lexical_query)
+    selected: list[tuple[str, float | None]] = []
+    selected_facets: set[str] = set()
+    facets = finance_query_facets(query)
+    if len(facets) > 1 or (facets and facets[0] != lexical_query):
+        for facet in facets:
+            for document, score in _unique_bm25_ranking(bm25, lexical_corpus, facet):
+                identity = _document_identity(document)
+                if identity not in selected_facets and finance_title_matches(document, facet):
+                    selected.append((document, score))
+                    selected_facets.add(identity)
+                    break
+            if len(selected) >= top_k:
+                break
+    for document, score in bm25_ranked:
+        identity = _document_identity(document)
+        if identity not in selected_facets:
+            selected.append((document, score))
+            selected_facets.add(identity)
+        if len(selected) >= top_k:
+            break
+    selected_ids = {_document_identity(item) for item, _ in selected}
     semantic_items: list[str] = []
     if len(selected) < top_k:
         semantic_candidate_k = max(top_k * 4, 20)
         semantic_items = _pgvector_candidates(stock_code, query, semantic_candidate_k)
         for item in semantic_items:
-            if item not in selected_ids:
+            identity = _document_identity(item)
+            if identity not in selected_ids:
                 selected.append((item, None))
-                selected_ids.add(item)
+                selected_ids.add(identity)
             if len(selected) >= top_k:
                 break
     _record_news_retrieval(

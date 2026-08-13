@@ -145,6 +145,17 @@ Evaluated with **RAGAS 0.1.21** using Qwen as the Judge LLM (switched from DeepS
 
 Development follows **EDD (Evaluation-Driven Development)**: every retrieval or prompt change runs `evaluation/evaluator.py` before merging.
 
+The online stock corpus combines recent Eastmoney news with filtered primary-source CNInfo disclosures.  News headlines remain the precision-first lexical source; official PDF chunks fill exact earnings, dividend, buyback and personnel facts.  Multi-intent questions reserve one lexical slot per detected finance facet, and duplicate chunks from the same disclosure are collapsed by source URL.  The complete before/after history and claim boundaries are recorded in [`project-log/rag-recall-improvements.md`](project-log/rag-recall-improvements.md).
+
+```bash
+# Through a local SSH tunnel to PostgreSQL (defaults to the 10 eval stocks)
+python -m scripts.refresh_announcement_index --port 15432 --lookback-days 30
+
+# Fast, model-free retrieval A/B before spending judge-model tokens
+python -m evaluation.run_remote_db_retrieval_eval --port 15432 \
+  --bm25-only --source-kinds news,announcement --evidence-mode online
+```
+
 Online monitoring uses one Langfuse trace per request. It records a redacted query fingerprint, corpus snapshot, top-k distances, rerank state, citation structural validation, abstention, token usage and latency. Public API responses expose only `run_id`, answer/citations and a safe `trace_summary`; prompts and detailed evidence remain in the private audit/Langfuse view. Alerting threshold: Faithfulness < 0.85 triggers review.
 
 ---

@@ -444,11 +444,19 @@ CREATE TABLE IF NOT EXISTS news_vectors (
     full_text   TEXT NOT NULL,
     pub_time    TEXT,
     date        DATE,
+    source_kind TEXT NOT NULL DEFAULT 'news',
+    source_url  TEXT,
+    publisher   TEXT,
     embedding   vector(768),
     indexed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE news_vectors ADD COLUMN IF NOT EXISTS source_kind TEXT NOT NULL DEFAULT 'news';
+ALTER TABLE news_vectors ADD COLUMN IF NOT EXISTS source_url TEXT;
+ALTER TABLE news_vectors ADD COLUMN IF NOT EXISTS publisher TEXT;
 CREATE INDEX IF NOT EXISTS idx_nv_stock ON news_vectors(stock_code);
 CREATE INDEX IF NOT EXISTS idx_nv_date  ON news_vectors(date);
+CREATE INDEX IF NOT EXISTS idx_nv_stock_source_date
+    ON news_vectors(stock_code, source_kind, date DESC);
 
 CREATE INDEX IF NOT EXISTS idx_nv_embedding
     ON news_vectors

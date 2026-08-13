@@ -167,6 +167,9 @@ def _build_news_item(row: Any, stock_code: str, stock_name: str) -> dict | None:
         "title": title,
         "full_text": " ".join(field for field in fields if field),
         "date": pub_time[:10] if re.match(r"^\d{4}-\d{2}-\d{2}", pub_time) else datetime.now().strftime("%Y-%m-%d"),
+        "source_kind": "news",
+        "source_url": source_url,
+        "publisher": source,
     }
 
 
@@ -264,7 +267,7 @@ def _insert_news_batch(items: list[dict], *, return_stats: bool = False) -> int 
 
     identified_by_id: dict[str, dict] = {}
     for item in items:
-        doc_id = _news_id(item["stock_code"], item["title"])
+        doc_id = item.get("id") or _news_id(item["stock_code"], item["title"])
         current = identified_by_id.get(doc_id)
         if current is None or len(item["full_text"]) > len(current["full_text"]):
             identified_by_id[doc_id] = item
@@ -297,13 +300,16 @@ def _insert_news_batch(items: list[dict], *, return_stats: bool = False) -> int 
                 """
                 INSERT INTO news_vectors
                     (id, stock_code, stock_name, title, full_text,
-                     pub_time, date, embedding)
+                     pub_time, date, source_kind, source_url, publisher, embedding)
                 VALUES %s
                 ON CONFLICT (id) DO UPDATE SET
                     stock_name = EXCLUDED.stock_name,
                     full_text = EXCLUDED.full_text,
                     pub_time = EXCLUDED.pub_time,
                     date = EXCLUDED.date,
+                    source_kind = EXCLUDED.source_kind,
+                    source_url = EXCLUDED.source_url,
+                    publisher = EXCLUDED.publisher,
                     embedding = EXCLUDED.embedding,
                     indexed_at = NOW()
                 WHERE LENGTH(EXCLUDED.full_text) > LENGTH(COALESCE(news_vectors.full_text, ''))
@@ -318,11 +324,14 @@ def _insert_news_batch(items: list[dict], *, return_stats: bool = False) -> int 
                         item["full_text"],
                         item["pub_time"],
                         item["date"] or None,
+                        item.get("source_kind", "news"),
+                        item.get("source_url", ""),
+                        item.get("publisher", ""),
                         str(emb),  # pgvector 接受 '[0.1, 0.2, ...]' 格式
                     )
                     for (doc_id, item), emb in zip(pending, embeddings)
                 ],
-                template="(%s, %s, %s, %s, %s, %s, %s, %s::vector)",
+                template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector)",
                 page_size=100,
                 fetch=True,
             )
@@ -510,7 +519,7 @@ def retrieve_news_corpus(
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT title, stock_name, pub_time
+                SELECT title, stock_name, pub_time, full_text, source_kind
                 FROM news_vectors
                 WHERE stock_code = %s AND date >= %s
                 ORDER BY date DESC, pub_time DESC
@@ -519,7 +528,12 @@ def retrieve_news_corpus(
                 (stock_code, cutoff, limit),
             )
             rows = cur.fetchall()
-    return [f"【{name} | {pub_time}】{title}" for title, name, pub_time in rows]
+    return [
+        str(full_text)
+        if source_kind == "announcement" and full_text
+        else f"【{name} | {pub_time}】{title}"
+        for title, name, pub_time, full_text, source_kind in rows
+    ]
 
 
 def _table_exists(table: str) -> bool:
