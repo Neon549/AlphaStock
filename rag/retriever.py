@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 import hashlib
+import re
 from collections import defaultdict
 
 import jieba
@@ -19,6 +20,44 @@ from rag.news_indexer import retrieve_news
 from tools.akshare_tools import get_stock_news
 
 
+_FINANCE_QUERY_ALIASES: tuple[tuple[str, str], ...] = (
+    ("AI服务器", "人工智能服务器 AI server 算力服务器"),
+    ("人工智能服务器", "AI服务器 AI server 算力服务器"),
+    ("算力", "AI服务器 人工智能 算力中心"),
+    ("大宗交易", "大宗交易 block trade bulk trade"),
+    ("回购", "股份回购 股票回购 回购注销"),
+    ("减持", "股东减持 减持计划 大宗交易"),
+    ("增持", "股东增持 买入 持股增加"),
+    ("董事长", "董事长 董事 负责人 任职 变更"),
+    ("高管", "高管 董事 监事 人事变动"),
+    ("净利润", "净利润 归母净利润 业绩利润"),
+    ("营收", "营业收入 营收 收入"),
+    ("现金流", "经营现金流 现金流量"),
+    ("资金流入", "资金流入 主力资金 净流入"),
+)
+
+
+def expand_finance_query(query: str) -> str:
+    """Add high-signal finance synonyms for lexical retrieval only."""
+
+    expanded = [query.strip()] if query and query.strip() else []
+    lowered = query.lower() if query else ""
+    for keyword, aliases in _FINANCE_QUERY_ALIASES:
+        if keyword.lower() in lowered:
+            expanded.append(aliases)
+    return " ".join(dict.fromkeys(expanded))
+
+
+def _finance_tokens(value: str) -> list[str]:
+    """Tokenize Chinese finance text while retaining IDs, numbers and chars."""
+
+    compact = "".join((value or "").lower().split())
+    words = [token for token in jieba.lcut(compact) if token.strip()]
+    chinese_chars = [char for char in compact if "\u4e00" <= char <= "\u9fff"]
+    latin_or_numbers = re.findall(r"[a-z]+|\d+(?:\.\d+)?", compact)
+    return words + chinese_chars + latin_or_numbers
+
+
 class SimpleBM25:
     """Small in-process BM25 scorer for the current live-news candidate set."""
 
@@ -26,7 +65,7 @@ class SimpleBM25:
         self.corpus = corpus
         self.k1 = k1
         self.b = b
-        self.tokenized = [list(jieba.cut(doc)) for doc in corpus]
+        self.tokenized = [_finance_tokens(doc) for doc in corpus]
         self.avg_dl = sum(len(doc) for doc in self.tokenized) / max(len(self.tokenized), 1)
         self.df: defaultdict[str, int] = defaultdict(int)
         self.tf: list[defaultdict[str, int]] = []
@@ -39,7 +78,7 @@ class SimpleBM25:
                 self.df[token] += 1
 
     def search(self, query: str, k: int = 10) -> list[tuple[int, float]]:
-        query_tokens = list(jieba.cut(query))
+        query_tokens = _finance_tokens(query)
         scored: list[tuple[int, float]] = []
         count = len(self.tokenized)
         for index, tokens in enumerate(self.tokenized):
@@ -63,13 +102,20 @@ def rrf_merge(vector_ranked: list[str], bm25_ranked: list[str], k: int = 60) -> 
     return [document for document, _ in _rrf_ranked(vector_ranked, bm25_ranked, k=k)]
 
 
-def _rrf_ranked(vector_ranked: list[str], bm25_ranked: list[str], k: int = 60) -> list[tuple[str, float]]:
+def _rrf_ranked(
+    vector_ranked: list[str],
+    bm25_ranked: list[str],
+    k: int = 60,
+    *,
+    vector_weight: float = 1.0,
+    bm25_weight: float = 1.0,
+) -> list[tuple[str, float]]:
     """Return RRF order with scores for private retrieval telemetry."""
     scores: defaultdict[str, float] = defaultdict(float)
     for rank, document in enumerate(vector_ranked):
-        scores[document] += 1.0 / (rank + k)
+        scores[document] += vector_weight / (rank + k)
     for rank, document in enumerate(bm25_ranked):
-        scores[document] += 1.0 / (rank + k)
+        scores[document] += bm25_weight / (rank + k)
     return sorted(scores.items(), key=lambda item: item[1], reverse=True)
 
 
@@ -78,11 +124,11 @@ def _lines(value: str) -> list[str]:
 
 
 def _rank_by_token_overlap(news_items: list[str], query: str) -> list[str]:
-    query_tokens = set(jieba.cut(query))
+    query_tokens = set(_finance_tokens(query))
     return [
         item
         for item, _ in sorted(
-            ((item, len(query_tokens & set(jieba.cut(item)))) for item in news_items),
+            ((item, len(query_tokens & set(_finance_tokens(item)))) for item in news_items),
             key=lambda pair: pair[1],
             reverse=True,
         )
@@ -91,7 +137,7 @@ def _rank_by_token_overlap(news_items: list[str], query: str) -> list[str]:
 
 def _pgvector_candidates(stock_code: str, query: str, top_k: int) -> list[str]:
     try:
-        result = retrieve_news(query=query, stock_code=stock_code, k=top_k * 2, days=7)
+        result = retrieve_news(query=query, stock_code=stock_code, k=top_k, days=7)
         if "[TOOL_ERROR]" in result or "未找到相关新闻" in result:
             return []
         return _lines(result)
@@ -109,7 +155,8 @@ def hybrid_retrieve_news(stock_code: str, query: str, top_k: int = 5) -> str:
         raw_news = ""
 
     live_items = _lines(raw_news)
-    semantic_items = _pgvector_candidates(stock_code, query, top_k)
+    semantic_candidate_k = max(top_k * 4, 20)
+    semantic_items = _pgvector_candidates(stock_code, query, semantic_candidate_k)
     if not live_items and not semantic_items:
         _record_news_retrieval(stock_code, query, top_k, [], 0, 0, rerank_applied=False)
         return "暂无可验证的相关新闻"
@@ -123,15 +170,21 @@ def hybrid_retrieve_news(stock_code: str, query: str, top_k: int = 5) -> str:
 
     # pgvector results are already semantically ranked.  Add current live
     # items ranked by query overlap so fresh news is not hidden by index lag.
-    vector_ranked = list(dict.fromkeys(semantic_items + _rank_by_token_overlap(live_items, query)))
+    lexical_query = expand_finance_query(query)
+    vector_ranked = list(dict.fromkeys(semantic_items + _rank_by_token_overlap(live_items, lexical_query)))
     lexical_corpus = list(dict.fromkeys(live_items + semantic_items))
     bm25 = SimpleBM25(lexical_corpus)
     bm25_ranked = [
         lexical_corpus[index]
-        for index, score in bm25.search(query, k=len(lexical_corpus))
+        for index, score in bm25.search(lexical_query, k=len(lexical_corpus))
         if score > 0
     ]
-    merged = _rrf_ranked(vector_ranked, bm25_ranked or lexical_corpus)
+    merged = _rrf_ranked(
+        vector_ranked,
+        bm25_ranked or lexical_corpus,
+        vector_weight=1.0,
+        bm25_weight=2.0,
+    )
     selected = merged[:top_k]
     _record_news_retrieval(stock_code, query, top_k, selected, len(live_items), len(semantic_items), rerank_applied=True)
     return "\n".join(item for item, _ in selected) or "暂无可验证的相关新闻"
@@ -175,7 +228,10 @@ def _record_news_retrieval(
                 "live_candidate_count": live_candidate_count,
                 "semantic_candidate_count": semantic_candidate_count,
             },
-            "rerank": {"applied": rerank_applied, "method": "rrf" if rerank_applied else None},
+            "rerank": {
+                "applied": rerank_applied,
+                "method": "weighted_rrf_bm25_2x" if rerank_applied else None,
+            },
         })
         record_rag_event("citation_validation", {
             "status": "not_applicable",

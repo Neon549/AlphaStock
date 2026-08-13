@@ -1,10 +1,28 @@
 import unittest
 from unittest.mock import patch
 
-from rag.retriever import hybrid_retrieve_news
+from rag.retriever import _rrf_ranked, expand_finance_query, hybrid_retrieve_news
 
 
 class NewsRetrieverTests(unittest.TestCase):
+    def test_finance_query_expansion_keeps_original_and_adds_synonyms(self):
+        expanded = expand_finance_query("600036 AI服务器需求")
+
+        self.assertIn("600036 AI服务器需求", expanded)
+        self.assertIn("人工智能服务器", expanded)
+        self.assertIn("算力服务器", expanded)
+
+    def test_weighted_rrf_can_prioritize_lexical_evidence(self):
+        ranked = _rrf_ranked(
+            ["semantic-only", "shared"],
+            ["lexical-only", "shared"],
+            vector_weight=1.0,
+            bm25_weight=2.0,
+        )
+
+        order = [item for item, _ in ranked]
+        self.assertLess(order.index("lexical-only"), order.index("semantic-only"))
+
     @patch("rag.retriever.retrieve_news")
     @patch("rag.retriever.get_stock_news")
     def test_hybrid_retrieval_fuses_live_and_pgvector_candidates(self, get_news, retrieve_news):
@@ -14,7 +32,7 @@ class NewsRetrieverTests(unittest.TestCase):
         result = hybrid_retrieve_news("600519", "业绩", top_k=3)
 
         self.assertIn("茅台业绩增长", result)
-        retrieve_news.assert_called_once_with(query="业绩", stock_code="600519", k=6, days=7)
+        retrieve_news.assert_called_once_with(query="业绩", stock_code="600519", k=20, days=7)
 
     @patch("rag.retriever.retrieve_news")
     @patch("rag.retriever.get_stock_news")

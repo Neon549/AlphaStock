@@ -167,9 +167,11 @@ def run_ragas_eval(samples: list[dict], label: str) -> dict:
             context_precision,
         )
         from datasets import Dataset
-        from langchain_openai import ChatOpenAI
+        from langchain_openai import ChatOpenAI, OpenAIEmbeddings
         from ragas.llms import LangchainLLMWrapper
+        from ragas.embeddings import LangchainEmbeddingsWrapper
         import os
+        import requests
 
         llm = ChatOpenAI(
             model="deepseek-chat",
@@ -179,6 +181,71 @@ def run_ragas_eval(samples: list[dict], label: str) -> dict:
         ragas_llm = LangchainLLMWrapper(llm)
         for m in [faithfulness, answer_relevancy, context_recall, context_precision]:
             m.llm = ragas_llm
+
+        # Some OpenAI-compatible providers reject the ``n>1`` request used by
+        # RAGAS AnswerRelevancy's default strictness=3.  One generated question
+        # is still a valid AnswerRelevancy score and keeps this evaluator
+        # compatible with DeepSeek/Qwen-compatible endpoints.
+        answer_relevancy.strictness = int(os.getenv("RAGAS_ANSWER_RELEVANCY_STRICTNESS", "1"))
+
+        # DeepSeek-compatible chat endpoints commonly do not expose an
+        # embeddings route.  Prefer the configured DashScope embedding model
+        # for AnswerRelevancy's semantic cosine similarity; fall back to the
+        # general OpenAI-compatible settings when explicitly configured.
+        embedding_key = os.getenv("RAGAS_EMBEDDING_API_KEY") or os.getenv("DASHSCOPE_API_KEY") or os.getenv("OPENAI_API_KEY")
+        embedding_base = os.getenv("RAGAS_EMBEDDING_BASE_URL")
+        if not embedding_base and os.getenv("DASHSCOPE_API_KEY"):
+            embedding_base = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        embedding_model = os.getenv("RAGAS_EMBEDDING_MODEL") or (
+            "text-embedding-v3" if os.getenv("DASHSCOPE_API_KEY") else "text-embedding-ada-002"
+        )
+        if embedding_key and os.getenv("DASHSCOPE_API_KEY"):
+            class DashScopeTextEmbeddings:
+                """RAGAS adapter for DashScope's native text embedding API."""
+
+                def __init__(self, api_key: str, model: str):
+                    self.api_key = api_key
+                    self.model = model
+                    self.endpoint = "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding"
+
+                def _embed(self, texts: list[str], text_type: str) -> list[list[float]]:
+                    response = requests.post(
+                        self.endpoint,
+                        headers={
+                            "Authorization": f"Bearer {self.api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": self.model,
+                            "input": {"texts": [str(text) for text in texts]},
+                            "parameters": {"text_type": text_type},
+                        },
+                        timeout=60,
+                    )
+                    response.raise_for_status()
+                    payload = response.json()
+                    embeddings = payload.get("output", {}).get("embeddings", [])
+                    embeddings = sorted(embeddings, key=lambda item: item.get("text_index", 0))
+                    return [item["embedding"] for item in embeddings]
+
+                def embed_query(self, text: str) -> list[float]:
+                    return self._embed([text], "query")[0]
+
+                def embed_documents(self, texts: list[str]) -> list[list[float]]:
+                    return self._embed(texts, "document")
+
+            answer_relevancy.embeddings = DashScopeTextEmbeddings(
+                embedding_key,
+                embedding_model,
+            )
+        elif embedding_key and embedding_base:
+            embeddings = OpenAIEmbeddings(
+                model=embedding_model,
+                api_key=embedding_key,
+                base_url=embedding_base,
+                chunk_size=16,
+            )
+            answer_relevancy.embeddings = LangchainEmbeddingsWrapper(embeddings)
 
         dataset = Dataset.from_list(samples)
         print(f"\n[{label}] 开始 RAGAS 评估，共 {len(samples)} 条样本...")
