@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import math
 import hashlib
+import logging
+import os
 import re
 from collections import defaultdict
 
@@ -17,10 +19,25 @@ import jieba
 from langchain_core.tools import tool
 
 from rag.news_indexer import retrieve_news, retrieve_news_corpus
+from rag.query_rewrite import rewrite_retrieval_query
+from tools.stock_name_dict import get_stock_name
 from tools.akshare_tools import get_stock_news
 
 
 NEWS_RETRIEVAL_DAYS = 30
+DEFAULT_NEWS_RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
+# RAGAS showed that a Top-20 pool displaced too much high-precision lexical
+# evidence.  Keep BGE as the default second stage, but reorder BM25's Top-5;
+# wider candidate pools remain explicit experiments.
+NEWS_RERANK_CANDIDATE_K = max(5, int(os.getenv("NEWS_RERANK_CANDIDATE_K", "5")))
+NEWS_RERANK_BATCH_SIZE = max(1, int(os.getenv("NEWS_RERANK_BATCH_SIZE", "16")))
+# Keep pure Cross-Encoder order as the default.  The 50/50 lexical blend is
+# configurable for offline experiments but regressed all four RAGAS metrics.
+NEWS_RERANK_BGE_WEIGHT = min(1.0, max(0.0, float(os.getenv("NEWS_RERANK_BGE_WEIGHT", "1.0"))))
+
+logger = logging.getLogger(__name__)
+_news_reranker = None
+_news_reranker_load_attempted = False
 
 _FINANCE_QUERY_ALIASES: tuple[tuple[str, str], ...] = (
     ("AI服务器", "人工智能服务器 AI server 算力服务器"),
@@ -146,6 +163,20 @@ def _lines(value: str) -> list[str]:
     return [line.strip() for line in (value or "").splitlines() if line.strip()]
 
 
+def _filter_live_news_by_entity(stock_code: str, items: list[str]) -> list[str]:
+    """Drop live feed listicles that do not identify the requested security.
+
+    The persisted corpus applies the richer, official-alias-aware gate in
+    ``retrieve_news_corpus``.  Live rows lack that metadata, so use the local
+    canonical name and ticker.  Persisted evidence still fills results when a
+    valid story uses a newer short name.
+    """
+
+    stock_name = get_stock_name(stock_code)
+    entity_names = (stock_code, stock_name)
+    return [item for item in items if any(entity_name and entity_name in item for entity_name in entity_names)]
+
+
 def _document_identity(document: str) -> str:
     """Collapse multiple evidence chunks from the same official disclosure."""
 
@@ -224,6 +255,133 @@ def _select_faceted_bm25(corpus: list[str], query: str, top_k: int) -> tuple[lis
     return selected, primary
 
 
+def _get_news_reranker():
+    """Load the production BGE cross-encoder once, without network access.
+
+    The model is deliberately lazy: a process serving a request that does not
+    need news retrieval does not pay the model's memory or startup cost.  A
+    missing local model must not make news retrieval unavailable, so callers
+    receive ``None`` and retain the first-stage BM25 ranking.
+    """
+
+    global _news_reranker, _news_reranker_load_attempted
+    if _news_reranker_load_attempted:
+        return _news_reranker
+    _news_reranker_load_attempted = True
+    try:
+        # ``local_files_only`` does not prevent all optional processor-config
+        # probes in older Transformers releases.  Force offline mode before
+        # importing the model stack so a partial/missing cache fails fast.
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+        import torch
+        from sentence_transformers import CrossEncoder
+
+        device = os.getenv("NEWS_RERANK_DEVICE") or ("cuda" if torch.cuda.is_available() else "cpu")
+        model_name = os.getenv("NEWS_RERANKER_MODEL", DEFAULT_NEWS_RERANKER_MODEL)
+        model = CrossEncoder(model_name, device=device, local_files_only=True)
+
+        def rerank(query: str, passages: list[str]) -> list[float]:
+            pairs = [(query, passage) for passage in passages]
+            scores = model.predict(pairs, batch_size=NEWS_RERANK_BATCH_SIZE, show_progress_bar=False)
+            return [float(score) for score in scores]
+
+        _news_reranker = rerank
+        logger.info("Loaded news reranker model=%s device=%s", model_name, device)
+    except Exception as exc:
+        logger.warning("BGE news reranker unavailable; using BM25 order: %s", exc)
+    return _news_reranker
+
+
+def _rerank_news_candidates(
+    query: str,
+    primary_ranked: list[tuple[str, float]],
+    facet_selected: list[tuple[str, float]],
+    top_k: int,
+) -> tuple[list[tuple[str, float]], bool]:
+    """Cross-encode a bounded news pool while retaining multi-facet coverage."""
+
+    if not primary_ranked or top_k <= 0:
+        return [], False
+    candidates: list[str] = []
+    bm25_scores: dict[str, float] = {}
+    seen: set[str] = set()
+    # BGE is a second-stage ordering pass, not a second retrieval policy.  Its
+    # default pool is exactly the BM25/facet output that would otherwise reach
+    # the answer model.  This preserves lexical topic coverage while allowing
+    # the cross-encoder to order those evidence items by query relevance.  A
+    # deliberately wider environment override remains an offline experiment.
+    candidate_source = (
+        facet_selected
+        if NEWS_RERANK_CANDIDATE_K <= top_k
+        else [*facet_selected, *primary_ranked]
+    )
+    for document, _ in candidate_source:
+        identity = _document_identity(document)
+        if identity not in seen:
+            candidates.append(document)
+            seen.add(identity)
+        bm25_scores[identity] = max(bm25_scores.get(identity, float("-inf")), float(_))
+        if len(candidates) >= max(top_k, NEWS_RERANK_CANDIDATE_K):
+            break
+
+    reranker = _get_news_reranker()
+    if reranker is None:
+        return facet_selected[:top_k], False
+    try:
+        scores = reranker(query, candidates)
+    except Exception as exc:
+        logger.warning("BGE news reranking failed; using BM25 order: %s", exc)
+        return facet_selected[:top_k], False
+    if len(scores) != len(candidates):
+        logger.warning("BGE news reranker returned %s scores for %s candidates", len(scores), len(candidates))
+        return facet_selected[:top_k], False
+    try:
+        scores = [float(score) for score in scores]
+    except (TypeError, ValueError):
+        logger.warning("BGE news reranker returned a non-numeric score; using BM25 order")
+        return facet_selected[:top_k], False
+    if not all(math.isfinite(score) for score in scores):
+        logger.warning("BGE news reranker returned a non-finite score; using BM25 order")
+        return facet_selected[:top_k], False
+
+    def normalise(values: list[float]) -> list[float]:
+        low, high = min(values), max(values)
+        if high <= low:
+            return [1.0] * len(values)
+        return [(value - low) / (high - low) for value in values]
+
+    bge_normalised = normalise(scores)
+    lexical_normalised = normalise([bm25_scores[_document_identity(document)] for document in candidates])
+    reranked = sorted(
+        zip(candidates, scores, bge_normalised, lexical_normalised, range(len(candidates))),
+        key=lambda item: (-(NEWS_RERANK_BGE_WEIGHT * item[2] + (1 - NEWS_RERANK_BGE_WEIGHT) * item[3]), item[4]),
+    )
+    selected: list[tuple[str, float]] = []
+    selected_ids: set[str] = set()
+    facets = finance_query_facets(query)
+    is_multi_facet = len(facets) > 1 or (facets and facets[0] != expand_finance_query(query))
+    if is_multi_facet:
+        for facet in facets:
+            match = next(
+                ((document, float(score)) for document, score, _, _, _ in reranked if finance_title_matches(document, facet)),
+                None,
+            )
+            if match and _document_identity(match[0]) not in selected_ids:
+                selected.append(match)
+                selected_ids.add(_document_identity(match[0]))
+            if len(selected) >= top_k:
+                return selected, True
+    for document, score, _, _, _ in reranked:
+        identity = _document_identity(document)
+        if identity not in selected_ids:
+            selected.append((document, float(score)))
+            selected_ids.add(identity)
+        if len(selected) >= top_k:
+            break
+    return selected, True
+
+
 def _rank_by_token_overlap(news_items: list[str], query: str) -> list[str]:
     query_tokens = set(_finance_tokens(query))
     return [
@@ -236,13 +394,13 @@ def _rank_by_token_overlap(news_items: list[str], query: str) -> list[str]:
     ]
 
 
-def _pgvector_candidates(stock_code: str, query: str, top_k: int) -> list[str]:
+def _pgvector_candidates(stock_code: str, query: str, top_k: int, *, days: int = NEWS_RETRIEVAL_DAYS) -> list[str]:
     try:
         result = retrieve_news(
             query=query,
             stock_code=stock_code,
             k=top_k,
-            days=NEWS_RETRIEVAL_DAYS,
+            days=days,
         )
         if "[TOOL_ERROR]" in result or "未找到相关新闻" in result:
             return []
@@ -253,11 +411,11 @@ def _pgvector_candidates(stock_code: str, query: str, top_k: int) -> list[str]:
         return []
 
 
-def _scoped_lexical_candidates(stock_code: str) -> list[str]:
+def _scoped_lexical_candidates(stock_code: str, *, days: int = NEWS_RETRIEVAL_DAYS) -> list[str]:
     try:
         return retrieve_news_corpus(
             stock_code,
-            days=NEWS_RETRIEVAL_DAYS,
+            days=days,
             limit=500,
         )
     except Exception:
@@ -267,18 +425,26 @@ def _scoped_lexical_candidates(stock_code: str) -> list[str]:
 def hybrid_retrieve_news(stock_code: str, query: str, top_k: int = 5) -> str:
     """Retrieve stock-scoped BM25 evidence with lazy semantic fallback."""
 
+    # The retrieval scope is the resolved task entity.  Treat it as inherited
+    # context so a ticker explicitly written in a follow-up keeps precedence
+    # in the auditable rewrite plan.
+    rewrite = rewrite_retrieval_query(query, context_stock_code=stock_code)
+    retrieval_query = rewrite["rewritten_query"]
+    news_days = int(rewrite["filters"].get("news_days", NEWS_RETRIEVAL_DAYS))
+
     raw_news = get_stock_news.invoke({"symbol": stock_code})
     if "[TOOL_ERROR]" in (raw_news or ""):
         raw_news = ""
 
-    live_items = _lines(raw_news)
-    scoped_lexical_items = _scoped_lexical_candidates(stock_code)
+    live_items = _filter_live_news_by_entity(stock_code, _lines(raw_news))
+    scoped_lexical_items = _scoped_lexical_candidates(stock_code, days=news_days)
     if not query:
         selected = (live_items or scoped_lexical_items)[:top_k]
         _record_news_retrieval(
             stock_code, query, top_k, [(item, None) for item in selected],
             len(live_items), 0,
             lexical_candidate_count=len(scoped_lexical_items), rerank_applied=False,
+            rewrite=rewrite,
         )
         return "\n".join(selected) or "暂无可验证的相关新闻"
 
@@ -288,11 +454,17 @@ def hybrid_retrieve_news(stock_code: str, query: str, top_k: int = 5) -> str:
     lexical_corpus = list(dict.fromkeys(live_items + scoped_lexical_items))
     news_corpus = [item for item in lexical_corpus if not _is_official_announcement(item)]
     announcement_corpus = [item for item in lexical_corpus if _is_official_announcement(item)]
-    selected, bm25_ranked = _select_faceted_bm25(news_corpus, query, top_k)
+    lexical_selected, bm25_ranked = _select_faceted_bm25(news_corpus, retrieval_query, top_k)
+    selected, rerank_applied = _rerank_news_candidates(
+        retrieval_query,
+        bm25_ranked,
+        lexical_selected,
+        top_k,
+    )
     if len(selected) < top_k:
         announcement_selected, announcement_ranked = _select_faceted_bm25(
             announcement_corpus,
-            query,
+            retrieval_query,
             top_k - len(selected),
         )
         existing_ids = {_document_identity(item) for item, _ in selected}
@@ -305,7 +477,7 @@ def hybrid_retrieve_news(stock_code: str, query: str, top_k: int = 5) -> str:
     semantic_items: list[str] = []
     if len(selected) < top_k:
         semantic_candidate_k = max(top_k * 4, 20)
-        semantic_items = _pgvector_candidates(stock_code, query, semantic_candidate_k)
+        semantic_items = _pgvector_candidates(stock_code, retrieval_query, semantic_candidate_k, days=news_days)
         for item in semantic_items:
             identity = _document_identity(item)
             if identity not in selected_ids:
@@ -321,7 +493,9 @@ def hybrid_retrieve_news(stock_code: str, query: str, top_k: int = 5) -> str:
         len(live_items),
         len(semantic_items),
         lexical_candidate_count=len(scoped_lexical_items),
-        rerank_applied=bool(bm25_ranked),
+        rerank_applied=rerank_applied,
+        rerank_method="bge_cross_encoder_news" if rerank_applied else "scoped_title_bm25_fallback",
+        rewrite=rewrite,
     )
     return "\n".join(item for item, _ in selected) or "暂无可验证的相关新闻"
 
@@ -336,6 +510,8 @@ def _record_news_retrieval(
     *,
     lexical_candidate_count: int = 0,
     rerank_applied: bool,
+    rerank_method: str | None = None,
+    rewrite: dict[str, object] | None = None,
 ) -> None:
     """Write RAG metadata only; headlines and raw query never leave the process."""
     try:
@@ -361,14 +537,24 @@ def _record_news_retrieval(
             "corpus_snapshot": {
                 "source_kind": "news_index_and_live_feed",
                 "stock_code": stock_code,
-                "window_days": 7,
+                "window_days": int((rewrite or {}).get("filters", {}).get("news_days", NEWS_RETRIEVAL_DAYS)),
                 "live_candidate_count": live_candidate_count,
                 "semantic_candidate_count": semantic_candidate_count,
                 "lexical_candidate_count": lexical_candidate_count,
             },
             "rerank": {
                 "applied": rerank_applied,
-                "method": "scoped_title_bm25_semantic_fallback" if rerank_applied else None,
+                "method": rerank_method,
+                "model": os.getenv("NEWS_RERANKER_MODEL", DEFAULT_NEWS_RERANKER_MODEL) if rerank_applied else None,
+                "candidate_k": NEWS_RERANK_CANDIDATE_K if rerank_applied else 0,
+                "bge_weight": NEWS_RERANK_BGE_WEIGHT if rerank_applied else None,
+            },
+            "query_rewrite": {
+                "applied": bool((rewrite or {}).get("applied")),
+                "source": (rewrite or {}).get("rewrite_source"),
+                "reason": (rewrite or {}).get("rewrite_reason", []),
+                "filters": (rewrite or {}).get("filters", {}),
+                "rewritten_query": redact_query(str((rewrite or {}).get("rewritten_query") or query)),
             },
         })
         record_rag_event("citation_validation", {

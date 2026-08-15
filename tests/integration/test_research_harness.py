@@ -205,6 +205,18 @@ class ResearchHarnessTests(unittest.TestCase):
         self.assertIn("Never use stale prices", result["content"])
         self.assertEqual(result["citations"][0]["source_path"], "governance.md")
 
+    @patch("tools.akshare_tools.get_stock_history")
+    def test_default_executor_supports_bounded_market_history(self, history):
+        history.invoke.return_value = "[TOOL_OK]\nretrieved_at=2026-08-15T10:00:00+10:00"
+
+        result = _default_executor(
+            "market-history", stock_code="600519", session_id=None,
+            query="", granted_permissions={"market:read"},
+        )
+
+        self.assertTrue(result["ok"])
+        history.invoke.assert_called_once_with({"symbol": "600519", "days": 30})
+
 
 if __name__ == "__main__":
     unittest.main()

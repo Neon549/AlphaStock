@@ -52,6 +52,7 @@ def _actual_task_signature(tasks: list[dict[str, Any]]) -> Counter[tuple[Any, ..
             tuple(sorted(task_intents[dependency] for dependency in task.get("depends_on", []))),
             bool(task.get("requires_confirmation")),
             task.get("slots", {}).get("stock_code"),
+            tuple(task.get("slots", {}).get("stock_codes", [])),
             task.get("slots", {}).get("analyst_focus"),
         )
         for task in tasks
@@ -65,6 +66,7 @@ def _expected_task_signature(tasks: list[dict[str, Any]]) -> Counter[tuple[Any, 
             tuple(sorted(task.get("depends_on_intents", []))),
             bool(task.get("requires_confirmation", False)),
             task.get("stock_code"),
+            tuple(task.get("stock_codes", [])),
             task.get("analyst_focus"),
         )
         for task in tasks
@@ -78,6 +80,11 @@ def evaluate_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     confusion: Counter[tuple[int, int]] = Counter()
     source_counts: Counter[str] = Counter()
     multi_intent_count = 0
+    compound_confusion: Counter[tuple[bool, bool]] = Counter()
+    clarification_confusion: Counter[tuple[bool, bool]] = Counter()
+    high_risk_confusion: Counter[tuple[bool, bool]] = Counter()
+    bucket_counts: Counter[str] = Counter()
+    bucket_checks: Counter[str] = Counter()
 
     for row in rows:
         expected = row["expected"]
@@ -96,6 +103,44 @@ def evaluate_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "intent_exact": parsed.get("intent") == expected.get("intent"),
             "task_graph_exact": _actual_task_signature(plan.get("tasks", [])) == _expected_task_signature(expected.get("tasks", [])),
         }
+        if "clarification_required" in expected:
+            expected_clarification = bool(expected["clarification_required"])
+            has_trade_task = any(task.get("intent") == "trade_action" for task in plan.get("tasks", []))
+            actual_clarification = (parsed.get("intent") == 4 and not has_trade_task) or any(
+                bool(task.get("missing_slots")) for task in plan.get("tasks", [])
+            )
+            clarification_confusion[(expected_clarification, actual_clarification)] += 1
+            outcome["clarification_required_exact"] = actual_clarification == expected_clarification
+        if "high_risk_route" in expected:
+            expected_high_risk = bool(expected["high_risk_route"])
+            actual_high_risk = any(
+                task.get("intent") == "trade_action" and bool(task.get("requires_confirmation"))
+                for task in plan.get("tasks", [])
+            )
+            high_risk_confusion[(expected_high_risk, actual_high_risk)] += 1
+            outcome["high_risk_route_exact"] = actual_high_risk == expected_high_risk
+        if "required_missing_slots" in expected:
+            expected_missing = sorted(str(item) for item in expected["required_missing_slots"])
+            actual_missing = sorted({
+                str(item) for task in plan.get("tasks", []) for item in task.get("missing_slots", [])
+            })
+            outcome["required_missing_slots_exact"] = actual_missing == expected_missing
+        expected_compound = expected.get("compound")
+        actual_compound = parsed.get("compound_intent") if isinstance(parsed.get("compound_intent"), dict) else {}
+        if isinstance(expected_compound, dict):
+            expected_detected = bool(expected_compound.get("detected"))
+            actual_detected = bool(actual_compound.get("detected"))
+            compound_confusion[(expected_detected, actual_detected)] += 1
+            outcome["compound_detected_exact"] = actual_detected == expected_detected
+            outcome["compound_classification_exact"] = (
+                actual_compound.get("classification") == expected_compound.get("classification")
+            )
+            outcome["compound_execution_policy_exact"] = (
+                actual_compound.get("execution_policy") == expected_compound.get("execution_policy")
+            )
+            outcome["compound_task_intents_exact"] = (
+                actual_compound.get("task_intents") == expected_compound.get("task_intents")
+            )
         if "stock_code" in expected:
             outcome["stock_code_exact"] = parsed.get("stock_code") == expected["stock_code"]
         if "analyst_focus" in expected:
@@ -107,6 +152,9 @@ def evaluate_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         end_to_end = all(outcome.values())
         denominators["end_to_end_exact"] += 1
         checks["end_to_end_exact"] += int(end_to_end)
+        bucket = str(row.get("bucket") or "unbucketed")
+        bucket_counts[bucket] += 1
+        bucket_checks[bucket] += int(end_to_end)
         if not end_to_end:
             failures.append({
                 "id": row.get("id"),
@@ -117,6 +165,7 @@ def evaluate_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
                     "stock_code": parsed.get("stock_code"),
                     "analyst_focus": parsed.get("analyst_focus"),
                     "source": parsed.get("source"),
+                    "compound_intent": actual_compound,
                     "sub_intents": plan.get("tasks", []),
                 },
                 "failed_checks": [name for name, passed in outcome.items() if not passed],
@@ -144,6 +193,25 @@ def evaluate_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "f1": round(f1, 4),
         }
     metrics["intent_macro_f1"] = round(sum(f1_values) / len(f1_values), 4) if f1_values else 0.0
+    def add_binary_metrics(prefix: str, confusion_counts: Counter[tuple[bool, bool]]) -> None:
+        true_positive = confusion_counts[(True, True)]
+        false_positive = confusion_counts[(False, True)]
+        false_negative = confusion_counts[(True, False)]
+        precision = true_positive / (true_positive + false_positive) if true_positive + false_positive else 0.0
+        recall = true_positive / (true_positive + false_negative) if true_positive + false_negative else 0.0
+        metrics[f"{prefix}_precision"] = round(precision, 4)
+        metrics[f"{prefix}_recall"] = round(recall, 4)
+        metrics[f"{prefix}_f1"] = round(
+            2 * precision * recall / (precision + recall) if precision + recall else 0.0,
+            4,
+        )
+
+    if compound_confusion:
+        add_binary_metrics("compound_detection", compound_confusion)
+    if clarification_confusion:
+        add_binary_metrics("clarification", clarification_confusion)
+    if high_risk_confusion:
+        add_binary_metrics("high_risk_route", high_risk_confusion)
     return {
         "dataset_size": len(rows),
         "metrics": metrics,
@@ -159,6 +227,31 @@ def evaluate_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 4,
             ),
             "multi_intent_rate": round(multi_intent_count / len(rows), 4),
+            "compound_detection_confusion": {
+                "true_positive": compound_confusion[(True, True)],
+                "false_positive": compound_confusion[(False, True)],
+                "false_negative": compound_confusion[(True, False)],
+                "true_negative": compound_confusion[(False, False)],
+            } if compound_confusion else None,
+            "clarification_confusion": {
+                "true_positive": clarification_confusion[(True, True)],
+                "false_positive": clarification_confusion[(False, True)],
+                "false_negative": clarification_confusion[(True, False)],
+                "true_negative": clarification_confusion[(False, False)],
+            } if clarification_confusion else None,
+            "high_risk_route_confusion": {
+                "true_positive": high_risk_confusion[(True, True)],
+                "false_positive": high_risk_confusion[(False, True)],
+                "false_negative": high_risk_confusion[(True, False)],
+                "true_negative": high_risk_confusion[(False, False)],
+            } if high_risk_confusion else None,
+        },
+        "bucket_metrics": {
+            bucket: {
+                "case_count": bucket_counts[bucket],
+                "end_to_end_exact": round(bucket_checks[bucket] / bucket_counts[bucket], 4),
+            }
+            for bucket in sorted(bucket_counts)
         },
         "failures": failures,
         "notes": [

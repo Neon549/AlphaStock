@@ -18,6 +18,7 @@ VALID_SPLITS = {"regression", "validation", "test"}
 VALID_FOCUSES = {"technical", "fundamental", "sentiment", "all", None}
 VALID_TASK_INTENTS = {
     "investment_analysis",
+    "comparison",
     "backtest",
     "market_scan",
     "strategy_screen",
@@ -25,6 +26,8 @@ VALID_TASK_INTENTS = {
     "trade_action",
     "clarify",
 }
+VALID_COMPOUND_CLASSIFICATIONS = {"single", "parallel", "sequential", "confirmation_gated"}
+VALID_COMPOUND_EXECUTION_POLICIES = {"single_task", "parallel_stage", "sequential_stages", "confirmation_gate"}
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -150,6 +153,15 @@ def validate_intent_rows(rows: list[dict[str, Any]], *, require_reviewed_provena
         focus = expected.get("analyst_focus")
         if focus not in VALID_FOCUSES:
             errors.append(f"{case_id}: invalid analyst_focus {focus!r}")
+        if "clarification_required" in expected and not isinstance(expected["clarification_required"], bool):
+            errors.append(f"{case_id}: clarification_required must be boolean")
+        if "high_risk_route" in expected and not isinstance(expected["high_risk_route"], bool):
+            errors.append(f"{case_id}: high_risk_route must be boolean")
+        if "required_missing_slots" in expected and (
+            not isinstance(expected["required_missing_slots"], list)
+            or any(item not in {"stock_code", "strategy", "backtest_window"} for item in expected["required_missing_slots"])
+        ):
+            errors.append(f"{case_id}: required_missing_slots is invalid")
         tasks = expected.get("tasks")
         if not isinstance(tasks, list) or not tasks:
             errors.append(f"{case_id}: expected.tasks must be a non-empty list")
@@ -171,6 +183,18 @@ def validate_intent_rows(rows: list[dict[str, Any]], *, require_reviewed_provena
                 errors.append(f"{case_id}: task {index} requires_confirmation must be boolean")
         if "trade_action" in task_intents and not any(task.get("requires_confirmation") is True for task in tasks if isinstance(task, dict)):
             errors.append(f"{case_id}: trade_action requires explicit confirmation")
+        compound = expected.get("compound")
+        if compound is not None:
+            if not isinstance(compound, dict):
+                errors.append(f"{case_id}: expected.compound must be an object")
+            elif (
+                not isinstance(compound.get("detected"), bool)
+                or compound.get("classification") not in VALID_COMPOUND_CLASSIFICATIONS
+                or compound.get("execution_policy") not in VALID_COMPOUND_EXECUTION_POLICIES
+                or not isinstance(compound.get("task_intents"), list)
+                or any(item not in VALID_TASK_INTENTS for item in compound.get("task_intents", []))
+            ):
+                errors.append(f"{case_id}: invalid expected.compound contract")
 
     return {
         "kind": "intent",
@@ -187,9 +211,9 @@ def main() -> int:
     parser.add_argument("--kind", choices=("rag", "intent"), required=True)
     parser.add_argument(
         "--tier",
-        choices=("contract", "smoke", "production"),
+        choices=("contract", "smoke", "candidate", "production"),
         default="production",
-        help="Production requires reviewer provenance; smoke and contract validate structure only.",
+        help="Production requires reviewer provenance; contract, smoke and candidate validate structure only.",
     )
     parser.add_argument("--dataset", type=Path, required=True)
     args = parser.parse_args()

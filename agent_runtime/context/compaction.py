@@ -25,6 +25,7 @@ def persist_tool_result(
     content: str,
     source_kind: str,
     citations: list[dict[str, Any]],
+    stock_code: str | None = None,
 ) -> str:
     """Persist the full local tool payload outside prompt context.
 
@@ -51,21 +52,36 @@ def persist_tool_result(
             encoding="utf-8",
         )
     result_ref = f"runtime:tool-result:{tool}:{digest}"
+    market_evidence = None
+    if stock_code:
+        try:
+            from market.evidence import build_market_evidence_record
+
+            market_evidence = build_market_evidence_record(
+                tool,
+                stock_code,
+                content,
+                result_ref=result_ref,
+            )
+        except Exception:
+            # Structured persistence is additive; it must never block the
+            # existing tool-result artifact or the research response.
+            market_evidence = None
     # A run buffers artifacts in memory and flushes them to PostgreSQL only
     # after the parent agent_run row exists.  This keeps result_ref durable
     # without letting a tool failure become a database availability failure.
     try:
         from control_plane.observability import register_tool_artifact
-        register_tool_artifact(
-            result_ref,
-            {
+        artifact = {
                 "tool": tool,
                 "source_kind": source_kind,
                 "citations": citations,
                 "content": content,
                 "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
-            },
-        )
+            }
+        if market_evidence:
+            artifact["market_evidence"] = market_evidence
+        register_tool_artifact(result_ref, artifact)
     except Exception:
         pass
     return result_ref

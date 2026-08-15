@@ -10,6 +10,7 @@ import argparse
 import gc
 import hashlib
 import json
+import math
 import os
 import re
 from collections import defaultdict
@@ -26,7 +27,8 @@ from evaluation.rag_snapshot_retrievers import (
     build_reranked_retriever,
 )
 from rag.news_indexer import news_evidence_snippet
-from rag.retriever import finance_query_facets, finance_title_matches
+from rag.retriever import expand_finance_query, finance_query_facets, finance_title_matches
+from tools.stock_name_dict import get_stock_name
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -34,26 +36,10 @@ DEFAULT_OUT = ROOT / "runtime" / "reports" / "remote-db-retrieval-ablation.json"
 DEFAULT_EMBEDDING_MODEL = "bge_small_zh_v1_5_no_instruction"
 DEFAULT_RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
 
-ALIASES = {
-    "提价": "调价 零售价 合同价 批价 上调",
-    "价格": "调价 零售价 合同价 批价 上调 下调",
-    "新公司": "成立 子公司 注册资本 新能源 物联网",
-    "业务扩展": "成立 子公司 合作 订单 注册资本",
-    "业绩": "净利润 净利 半年报 同比增长",
-    "分红": "派息 利润分配 中期分红 现金红利",
-    "人事变动": "离任 接任 任职 董事长 秘书",
-    "资金流动": "主力资金 净流入 净流出 特大单 资金动向",
-    "新业务": "成立 合作 订单 子公司",
-    "合作": "订单 成立 子公司",
-    "回购": "回购股份 回购金额 回购价格",
-    "上市": "港股 IPO 挂牌 联交所",
-    "重要动态": "回购 质押 成交 订单 资金动向",
-}
-
-
 def expand_query(query: str) -> str:
-    additions = [value for key, value in ALIASES.items() if key in query]
-    return f"{query} {' '.join(additions)}" if additions else query
+    """Use the same deterministic finance expansion as production retrieval."""
+
+    return expand_finance_query(query)
 
 
 def _remote_connection(port: int):
@@ -86,9 +72,25 @@ def load_remote_corpus(
             ORDER BY date DESC, pub_time DESC
             """
         )
+        raw_rows = cur.fetchall()
+        # Official disclosures expose the current exchange-recognised short
+        # name.  Preserve it as a trusted alias for news rows that may still
+        # carry an older name in their stock_name metadata.
+        trusted_aliases: dict[str, set[str]] = defaultdict(set)
+        for raw_stock_code, _title, raw_stock_name, _pub_time, _date, _full_text, raw_source_kind, _source_url, _publisher in raw_rows:
+            raw_stock_code = str(raw_stock_code)
+            alias = str(raw_stock_name or "").strip()
+            if (
+                re.fullmatch(r"\d{6}", raw_stock_code)
+                and str(raw_source_kind or "news") == "announcement"
+                and alias
+                and not re.fullmatch(r"\d{6}", alias)
+            ):
+                trusted_aliases[raw_stock_code].add(alias)
+
         rows = []
         seen: set[tuple[str, str, str, str, str]] = set()
-        for stock_code, title, stock_name, pub_time, date, full_text, source_kind, source_url, publisher in cur.fetchall():
+        for stock_code, title, stock_name, pub_time, date, full_text, source_kind, source_url, publisher in raw_rows:
             stock_code = str(stock_code)
             if not re.fullmatch(r"\d{6}", stock_code):
                 continue
@@ -96,6 +98,21 @@ def load_remote_corpus(
             if source_kinds and source_kind not in source_kinds:
                 continue
             title = str(title or "").strip()
+            stock_name = str(stock_name or "").strip()
+            # Mirror the production entity gate.  The upstream endpoint can
+            # attach sector-wide listicles to a stock-code request; a stored
+            # code is not enough unless the news headline identifies the
+            # requested company or ticker.  Official announcements stay
+            # available because their titles often omit the company name.
+            canonical_name = get_stock_name(stock_code)
+            entity_names = {
+                *(trusted_aliases.get(stock_code, set())),
+                *(() if canonical_name == "名称未验证" else (canonical_name,)),
+            }
+            if source_kind == "news" and stock_code not in title and not any(
+                entity_name in title for entity_name in entity_names if entity_name
+            ):
+                continue
             key = (stock_code, title, str(date), source_kind, str(full_text or ""))
             if not title or key in seen:
                 continue
@@ -118,7 +135,7 @@ def load_remote_corpus(
                     "content": text,
                     "text": text,
                     "stock_code": stock_code,
-                    "stock_name": str(stock_name or ""),
+                    "stock_name": stock_name,
                     "title": title,
                     "pub_time": str(pub_time or ""),
                     "date": str(date or ""),
@@ -209,18 +226,37 @@ def load_embedding_backend(name: str):
 
 
 def load_reranker(model_name: str):
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
     import torch
     from sentence_transformers import CrossEncoder
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = os.getenv("NEWS_RERANK_DEVICE") or ("cuda" if torch.cuda.is_available() else "cpu")
+    batch_size = max(1, int(os.getenv("NEWS_RERANK_BATCH_SIZE", "16")))
     model = CrossEncoder(model_name, device=device, local_files_only=True)
 
     def rerank(query: str, passages: list[str]) -> list[float]:
         pairs = [(query, passage) for passage in passages]
-        scores = model.predict(pairs, batch_size=32, show_progress_bar=False)
+        scores = model.predict(pairs, batch_size=batch_size, show_progress_bar=False)
         return [float(score) for score in scores]
 
-    return rerank, {"model": model_name, "device": device}
+    return rerank, {"model": model_name, "device": device, "batch_size": batch_size, "local_files_only": True}
+
+
+def _validated_rerank_scores(
+    scores: list[float],
+    candidates: list[dict[str, Any]],
+) -> list[float]:
+    """Reject malformed Cross-Encoder output instead of silently truncating it."""
+
+    if len(scores) != len(candidates):
+        raise ValueError(
+            f"reranker returned {len(scores)} scores for {len(candidates)} candidates"
+        )
+    values = [float(score) for score in scores]
+    if not all(math.isfinite(score) for score in values):
+        raise ValueError("reranker returned a non-finite score")
+    return values
 
 
 def _subset_retriever(
@@ -268,7 +304,10 @@ def _subset_reranked_retriever(
     candidates = hybrid(query, top_k=max(top_k, candidate_k))
     if not candidates:
         return []
-    scores = reranker(query, [str(item["content"]) for item in candidates])
+    scores = _validated_rerank_scores(
+        reranker(query, [str(item["content"]) for item in candidates]),
+        candidates,
+    )
     reranked = [
         {**item, "rerank_score": float(score)}
         for item, score in sorted(
@@ -290,6 +329,108 @@ def _subset_reranked_retriever(
         if len(output) >= top_k:
             break
     return output[:top_k]
+
+
+def _subset_bge_news_reranked(
+    corpus: list[dict[str, Any]],
+    reranker: Callable[[str, list[str]], list[float]],
+    stock_code: str,
+    query: str,
+    *,
+    top_k: int,
+    candidate_k: int,
+    bge_weight: float = 1.0,
+) -> list[dict[str, Any]]:
+    """Mirror production news retrieval: scoped BM25 then BGE reranking."""
+
+    # A candidate pool wider than ``top_k`` is an explicit retrieval-policy
+    # experiment.  Honour it here: the previous evaluator accepted candidate_k
+    # but silently scored only Top-K, which made a labelled Top-20 comparison
+    # indistinguishable from set-preserving Top-5 reranking.
+    candidates = _faceted_bm25(corpus, stock_code, query, top_k=max(top_k, candidate_k))
+    if not candidates:
+        return []
+    scores = _validated_rerank_scores(
+        reranker(query, [str(item["content"]) for item in candidates]),
+        candidates,
+    )
+    def normalise(values: list[float]) -> list[float]:
+        low, high = min(values), max(values)
+        if high <= low:
+            return [1.0] * len(values)
+        return [(value - low) / (high - low) for value in values]
+    bge_scores = scores
+    bm25_scores = [float(item.get("score", 0.0)) for item in candidates]
+    blended_scores = [
+        bge_weight * bge + (1 - bge_weight) * bm25
+        for bge, bm25 in zip(normalise(bge_scores), normalise(bm25_scores))
+    ]
+    reranked = [
+        {**item, "rerank_score": float(score)}
+        for item, score in sorted(
+            zip(candidates, blended_scores),
+            key=lambda pair: (-float(pair[1]), str(pair[0]["evidence_id"])),
+        )
+    ]
+    return reranked[:top_k]
+
+
+def _subset_bge_news_cascade(
+    corpus: list[dict[str, Any]],
+    reranker: Callable[[str, list[str]], list[float]],
+    stock_code: str,
+    query: str,
+    *,
+    retrieve_k: int = 20,
+    rerank_k: int = 10,
+    top_k: int = 5,
+) -> list[dict[str, Any]]:
+    """Evaluate a staged ``BM25 Top-20 -> BGE Top-10 -> context Top-5`` path.
+
+    The first stage keeps faceted lexical coverage. BGE then narrows the pool
+    to ten candidates. The final stage preserves one title-matched item per
+    requested facet where possible before filling by BGE score. This is an
+    offline policy experiment; it does not change the production default.
+    """
+    if not (retrieve_k >= rerank_k >= top_k > 0):
+        raise ValueError("cascade must satisfy retrieve_k >= rerank_k >= top_k > 0")
+    candidates = _faceted_bm25(corpus, stock_code, query, top_k=retrieve_k)
+    if not candidates:
+        return []
+    scores = _validated_rerank_scores(
+        reranker(query, [str(item["content"]) for item in candidates]),
+        candidates,
+    )
+    stage_ten = [
+        {**item, "rerank_score": float(score)}
+        for item, score in sorted(
+            zip(candidates, scores),
+            key=lambda pair: (-float(pair[1]), str(pair[0]["evidence_id"])),
+        )[:rerank_k]
+    ]
+    selected: list[dict[str, Any]] = []
+    selected_ids: set[str] = set()
+    facets = finance_query_facets(query)
+    is_multi_facet = len(facets) > 1 or (facets and facets[0] != expand_finance_query(query))
+    if is_multi_facet:
+        for facet in facets:
+            match = next(
+                (item for item in stage_ten if finance_title_matches(str(item.get("title", "")), facet)),
+                None,
+            )
+            if match and _item_identity(match) not in selected_ids:
+                selected.append(match)
+                selected_ids.add(_item_identity(match))
+            if len(selected) >= top_k:
+                return selected
+    for item in stage_ten:
+        identity = _item_identity(item)
+        if identity not in selected_ids:
+            selected.append(item)
+            selected_ids.add(identity)
+        if len(selected) >= top_k:
+            break
+    return selected
 
 
 def _subset_weighted_hybrid(
@@ -322,6 +463,38 @@ def _subset_weighted_hybrid(
 
 def _mean(values: list[float]) -> float:
     return round(sum(values) / len(values), 4) if values else 0.0
+
+
+def build_bge_comparison(results: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Summarise BGE deltas against the faceted BM25 diagnostic baseline."""
+
+    baseline_method = "bm25_scoped_faceted"
+    baseline_score = results.get(baseline_method, {}).get(
+        "keyword_context_recall_diagnostic"
+    )
+    comparison: dict[str, Any] = {
+        "baseline_method": baseline_method,
+        "metric": "keyword_context_recall_diagnostic",
+        "claim_boundary": (
+            "Fixed internal public-news diagnostic only; deltas are not RAGAS, "
+            "answer accuracy or production-quality claims."
+        ),
+        "methods": {},
+    }
+    if baseline_score is None:
+        return comparison
+    for method, metrics in results.items():
+        if "bge" not in method:
+            continue
+        score = metrics.get("keyword_context_recall_diagnostic")
+        comparison["methods"][method] = {
+            "candidate": score,
+            "baseline": baseline_score,
+            "delta": round(float(score) - float(baseline_score), 4)
+            if score is not None
+            else None,
+        }
+    return comparison
 
 
 def run(
@@ -373,6 +546,16 @@ def run(
         )
 
         rerank, rerank_meta = load_reranker(reranker_model)
+        methods["bm25_scoped_bge_reranked"] = lambda stock_code, query: _subset_bge_news_reranked(
+            corpus, rerank, stock_code, query, top_k=top_k, candidate_k=candidate_k,
+        )
+        methods["bm25_scoped_bge_bm25_blended"] = lambda stock_code, query: _subset_bge_news_reranked(
+            corpus, rerank, stock_code, query, top_k=top_k, candidate_k=candidate_k, bge_weight=0.5,
+        )
+        if top_k == 5:
+            methods["bm25_scoped_bge_20_10_5_faceted"] = lambda stock_code, query: _subset_bge_news_cascade(
+                corpus, rerank, stock_code, query, retrieve_k=20, rerank_k=10, top_k=5,
+            )
         reranked_global = build_reranked_retriever(hybrid_global, rerank, candidate_k=candidate_k)
         methods["hybrid_global_reranked"] = lambda stock_code, query: reranked_global(query, top_k=top_k)
         methods["hybrid_scoped_reranked"] = lambda stock_code, query: _subset_reranked_retriever(
@@ -443,6 +626,11 @@ def run(
             ),
             "details": rows,
         }
+
+    # Keep the BGE decision visible in the same artifact as the retrieval
+    # scores. This avoids making a reviewer manually subtract values from
+    # separate JSON files and keeps the fixed-set claim boundary explicit.
+    result["bge_comparison"] = build_bge_comparison(result["results"])
 
     # Let the caller reuse the exact contexts for LLM/RAGAS evaluation without
     # querying the live database again.

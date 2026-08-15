@@ -115,6 +115,51 @@ class InvestmentAgentLoopTests(unittest.TestCase):
         self.assertEqual(result["agent_trace"][0]["event"], "skill_result")
         self.assertIn("neutral stance", result["bull_argument"])
 
+    def test_loop_creates_and_destroys_one_ephemeral_evidence_reviewer(self):
+        planner = _SequenceLlm([
+            '{"action":"skill","skill":"market-price","arguments":{},"reason":"need current evidence"}',
+            '{"action":"create_subagent","template":"evidence-critic","objective":"检查现有证据的冲突和缺口","reason":"user asked for an evidence review"}',
+            '{"action":"final","reason":"review complete"}',
+        ])
+        final = _SequenceLlm([
+            "价格记录已获取，但仍需确认公告时间。",
+            "research summary with evidence gap",
+        ])
+
+        def execute(skill, *, state, arguments, granted):
+            self.assertEqual(skill, "market-price")
+            return {
+                "ok": True,
+                "content": "timestamped price=100",
+                "source_kind": "market_evidence",
+                "freshness": {"status": "retrieved"},
+            }
+
+        with patch(
+            "agent_runtime.agents.investment_harness.trader_node",
+            return_value={"final_decision": "draft with risks"},
+        ):
+            result = run_investment_agent_loop(
+                {
+                    "stock_code": "600519",
+                    "analysis_query": "先查价格，再核验证据冲突",
+                    "technical_report": SKIPPED,
+                    "fundamental_report": SKIPPED,
+                    "sentiment_report": SKIPPED,
+                },
+                planner_llm=planner,
+                final_llm=final,
+                skill_executor=execute,
+            )
+
+        events = result["agent_trace"]
+        created = next(item for item in events if item["event"] == "ephemeral_subagent_created")
+        destroyed = next(item for item in events if item["event"] == "ephemeral_subagent_destroyed")
+        self.assertEqual(created["template"], "evidence-critic")
+        self.assertEqual(created["instance_id"], destroyed["instance_id"])
+        review = next(item for item in result["research_evidence"] if item["source_kind"] == "ephemeral_review")
+        self.assertTrue(review["tool"].startswith("subagent:ephemeral-evidence-critic-"))
+
     def test_backtest_is_not_run_until_the_planner_explicitly_selects_it(self):
         planner = _SequenceLlm([
             '{"action":"skill","skill":"backtest","arguments":{"strategy":"kdj_macd"},"reason":"user requested validation"}',

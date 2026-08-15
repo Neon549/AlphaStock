@@ -312,6 +312,34 @@ CREATE TABLE IF NOT EXISTS agent_run_tool_results (
     PRIMARY KEY (run_id, result_ref)
 );
 
+-- Structured, append-only market evidence.  The human-readable tool result
+-- stays in agent_tool_results; this table stores typed retrieval dimensions
+-- and JSONB metrics so price/financial freshness can be queried without
+-- parsing prompt text.
+CREATE TABLE IF NOT EXISTS market_evidence (
+    evidence_id     TEXT PRIMARY KEY,
+    stock_code      TEXT NOT NULL CHECK (stock_code ~ '^[036][0-9]{5}$'),
+    stock_name      TEXT,
+    evidence_type   TEXT NOT NULL CHECK (evidence_type IN ('quote', 'financial_indicator', 'daily_history')),
+    as_of_at        TIMESTAMPTZ,
+    period_end      DATE,
+    retrieved_at    TIMESTAMPTZ NOT NULL,
+    source          TEXT NOT NULL,
+    source_url      TEXT,
+    payload         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    content_sha256  TEXT NOT NULL,
+    result_ref      TEXT REFERENCES agent_tool_results(result_ref),
+    quality_status  TEXT NOT NULL DEFAULT 'valid',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (stock_code, evidence_type, source, content_sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_market_evidence_stock_type_time
+    ON market_evidence (stock_code, evidence_type, retrieved_at DESC);
+CREATE INDEX IF NOT EXISTS idx_market_evidence_stock_period
+    ON market_evidence (stock_code, evidence_type, period_end DESC);
+CREATE INDEX IF NOT EXISTS idx_market_evidence_payload
+    ON market_evidence USING GIN (payload);
+
 -- ── Agent memory (separate from raw chat logs and evidence/RAG) ──────
 -- Learning artifacts remain downstream of the online run. A trajectory is
 -- never exported as SFT/DPO data until a human reviewer explicitly approves
@@ -430,6 +458,16 @@ CREATE TABLE IF NOT EXISTS agent_memory_candidates (
 );
 CREATE INDEX IF NOT EXISTS idx_memory_candidates_status_created
     ON agent_memory_candidates (status, created_at DESC);
+
+-- User-selected approval friction. Full access is short-lived and requires
+-- an explicit acknowledgement; it never bypasses hard policy blocks.
+CREATE TABLE IF NOT EXISTS agent_approval_modes (
+    actor_id                 TEXT PRIMARY KEY,
+    mode                     TEXT NOT NULL CHECK (mode IN ('safe', 'assist', 'full_access')),
+    elevated_confirmed_at    TIMESTAMPTZ,
+    elevated_expires_at      TIMESTAMPTZ,
+    updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
 """
 

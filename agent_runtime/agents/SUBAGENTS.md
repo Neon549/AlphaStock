@@ -57,3 +57,33 @@ one Python service.  It does not yet isolate children in separate processes or
 containers.  If arbitrary shell, write, or remote MCP capabilities are added,
 they must first gain OS/container and per-tool network policies in the
 Harness; a registry declaration alone is not a sandbox.
+
+## One-shot ephemeral review children
+
+The parent can additionally create **one** request-scoped ephemeral review
+child after it has collected evidence. This is not a free-form Fork Agent:
+the parent selects a reviewed template and a short objective, while the
+runtime owns all capabilities and lifecycle.
+
+| Template | Reads | Tools / permissions | Purpose |
+|---|---|---|---|
+| `evidence-critic` | Up to eight compact parent observations | none | Identify contradictions, unsupported claims and missing verification |
+| `risk-reviewer` | Up to eight compact parent observations | none | Identify evidence-backed downside risks and separate speculation |
+
+Planner action:
+
+```json
+{
+  "action": "create_subagent",
+  "template": "evidence-critic",
+  "objective": "Check whether price and announcement evidence conflict.",
+  "reason": "The user requested an evidence review."
+}
+```
+
+The runtime records `ephemeral_subagent_created`,
+`ephemeral_subagent_result`, and `ephemeral_subagent_destroyed` in the parent
+trace. It never adds the instance to the static registry, grants it tools,
+lets it call another agent, or retains it after the parent step. Dynamic
+instances are therefore suitable for review/synthesis needs, not for trading,
+publishing, shell access, arbitrary MCP access, or user-provided code.

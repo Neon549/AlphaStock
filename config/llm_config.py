@@ -37,7 +37,10 @@ if hasattr(sys.stdout, "reconfigure"):
 
 # ── 加载环境变量 ─────────────────────────────────────────────────────
 env_path = Path(__file__).resolve().parent.parent / ".env"
-load_dotenv(dotenv_path=env_path, override=True)
+# Deployment/CI environment variables must take precedence over a developer's
+# local .env file. CI can also skip dotenv entirely for offline regression.
+if os.getenv("ALPHASTOCK_SKIP_DOTENV") != "1":
+    load_dotenv(dotenv_path=env_path, override=False)
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")

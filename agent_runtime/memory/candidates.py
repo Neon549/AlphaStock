@@ -31,6 +31,36 @@ class MemoryCandidate:
     requested_by: str | None = None
 
 
+def _apply_approval_mode(candidate: MemoryCandidate) -> None:
+    """Apply the actor's mode after hard validation and durable insertion."""
+
+    if not candidate.requested_by:
+        return
+    from agent_runtime.governance.approval_modes import (
+        classify_memory_candidate,
+        get_approval_mode,
+        route_memory_candidate,
+    )
+
+    mode = get_approval_mode(candidate.requested_by)
+    risk = classify_memory_candidate(
+        category=candidate.category, title=candidate.title, content=candidate.content
+    )
+    action = route_memory_candidate(mode["mode"], risk)
+    if action != "auto_approve":
+        return
+
+    # This is intentionally attributed to a policy actor, never disguised as
+    # a person. The Markdown remains a normal approved source and still needs
+    # the explicit vector-index sync step.
+    review_candidate(
+        candidate.candidate_id,
+        approved=True,
+        reviewer=f"system:{mode['mode']}",
+        review_note=f"auto-approved by {mode['mode']} for {risk}-risk operating knowledge",
+    )
+
+
 def _validate(candidate: MemoryCandidate) -> None:
     if not candidate.title.strip() or len(candidate.title) > 120:
         raise ValueError("title must contain 1-120 characters")
@@ -66,6 +96,7 @@ def create_candidate(
             candidate.source_run_id, candidate.requested_by,
         ),
     )
+    _apply_approval_mode(candidate)
     return candidate
 
 
@@ -120,6 +151,8 @@ def _filename(candidate: dict[str, Any]) -> str:
 
 def render_approved_markdown(candidate: dict[str, Any], reviewer: str) -> str:
     """Render a deterministic, review-attributed source document."""
+    automated = reviewer.strip().startswith("system:")
+    approval_mode = reviewer.strip().split(":", 1)[1] if automated else "human"
     return (
         "---\n"
         "status: approved\n"
@@ -127,6 +160,8 @@ def render_approved_markdown(candidate: dict[str, Any], reviewer: str) -> str:
         "evidence_class: operating_knowledge\n"
         "market_fact_policy: never_override_current_evidence\n"
         f"owner: {reviewer}\n"
+        f"approval_method: {'policy_auto_approval' if automated else 'human'}\n"
+        f"approval_mode: {approval_mode}\n"
         "version: 1.0.0\n"
         f"source_candidate: {candidate['candidate_id']}\n"
         "---\n\n"

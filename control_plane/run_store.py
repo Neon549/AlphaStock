@@ -131,6 +131,40 @@ class PostgresRunStore:
                                 str(artifact.get("content_sha256") or ""),
                             ),
                         )
+                        market_evidence = artifact.get("market_evidence") or {}
+                        if market_evidence:
+                            cur.execute("SAVEPOINT market_evidence_write")
+                            try:
+                                cur.execute(
+                                    """
+                                    INSERT INTO market_evidence
+                                        (evidence_id, stock_code, stock_name, evidence_type,
+                                         as_of_at, period_end, retrieved_at, source, source_url,
+                                         payload, content_sha256, result_ref, quality_status)
+                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                    ON CONFLICT (evidence_id) DO NOTHING
+                                    """,
+                                    (
+                                        market_evidence.get("evidence_id"),
+                                        market_evidence.get("stock_code"),
+                                        market_evidence.get("stock_name"),
+                                        market_evidence.get("evidence_type"),
+                                        market_evidence.get("as_of_at"),
+                                        market_evidence.get("period_end"),
+                                        market_evidence.get("retrieved_at"),
+                                        market_evidence.get("source") or "unknown",
+                                        market_evidence.get("source_url"),
+                                        self._json(market_evidence.get("payload") or {}),
+                                        market_evidence.get("content_sha256"),
+                                        result_ref,
+                                        market_evidence.get("quality_status") or "valid",
+                                    ),
+                                )
+                            except Exception as market_exc:
+                                cur.execute("ROLLBACK TO SAVEPOINT market_evidence_write")
+                                print(f"[ControlPlane] market evidence write skipped: {market_exc}")
+                            finally:
+                                cur.execute("RELEASE SAVEPOINT market_evidence_write")
                         cur.execute(
                             """
                             INSERT INTO agent_run_tool_results (run_id, result_ref)

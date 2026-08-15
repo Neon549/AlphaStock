@@ -74,11 +74,19 @@ class DashScopeTextEmbeddings(Embeddings):
         return self._embed([text], "query")[0]
 
 
-def _load_samples(path: Path) -> list[dict[str, Any]]:
+def _load_samples(path: Path, method: str | None = None) -> list[dict[str, Any]]:
     payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict) or len(payload) != 1:
-        raise ValueError("samples JSON must contain exactly one retrieval method")
-    rows = next(iter(payload.values()))
+    if not isinstance(payload, dict):
+        raise ValueError("samples JSON must be an object keyed by retrieval method")
+    if method:
+        if method not in payload:
+            available = ", ".join(sorted(payload)) or "(none)"
+            raise ValueError(f"unknown retrieval method {method!r}; available: {available}")
+        rows = payload[method]
+    else:
+        if len(payload) != 1:
+            raise ValueError("samples JSON must contain exactly one retrieval method unless --method is set")
+        rows = next(iter(payload.values()))
     if not isinstance(rows, list) or not rows:
         raise ValueError("samples JSON is empty")
     return rows
@@ -98,7 +106,13 @@ def _dataset(rows: list[dict[str, Any]]) -> EvaluationDataset:
     )
 
 
-def run(samples_path: Path, *, judge_model: str, embedding_model: str) -> dict[str, Any]:
+def run(
+    samples_path: Path,
+    *,
+    judge_model: str,
+    embedding_model: str,
+    method: str | None = None,
+) -> dict[str, Any]:
     load_dotenv(ROOT / ".env", override=True)
     judge_key = os.getenv("OPENAI_API_KEY")
     judge_base = os.getenv("OPENAI_API_BASE")
@@ -124,7 +138,7 @@ def run(samples_path: Path, *, judge_model: str, embedding_model: str) -> dict[s
         LLMContextRecall(llm=ragas_llm),
         LLMContextPrecisionWithReference(name="context_precision", llm=ragas_llm),
     ]
-    rows = _load_samples(samples_path)
+    rows = _load_samples(samples_path, method=method)
     result = evaluate(
         _dataset(rows),
         metrics=metrics,
@@ -155,10 +169,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--samples", type=Path, required=True)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    parser.add_argument("--method", help="retrieval method key when the sample file contains multiple methods")
     parser.add_argument("--judge-model", default=os.getenv("RAGAS_JUDGE_MODEL", "deepseek-chat"))
     parser.add_argument("--embedding-model", default=os.getenv("RAGAS_EMBEDDING_MODEL", "text-embedding-v3"))
     args = parser.parse_args()
-    report = run(args.samples, judge_model=args.judge_model, embedding_model=args.embedding_model)
+    report = run(
+        args.samples,
+        judge_model=args.judge_model,
+        embedding_model=args.embedding_model,
+        method=args.method,
+    )
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report["summary"], ensure_ascii=False), flush=True)

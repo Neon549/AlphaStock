@@ -1,11 +1,22 @@
 import unittest
 
 from agent_runtime.agents.subagents import (
+    EphemeralSubagentFactory,
     SubagentRegistry,
     SubagentResult,
     SubagentSpec,
     SubagentTask,
 )
+
+
+class _Response:
+    def __init__(self, content):
+        self.content = content
+
+
+class _FakeLlm:
+    def invoke(self, _prompt):
+        return _Response("证据存在时间不一致，需要补充核验。")
 
 
 class SubagentRegistryTests(unittest.TestCase):
@@ -67,6 +78,38 @@ class SubagentRegistryTests(unittest.TestCase):
             granted_permissions={"market:read"},
         )
         self.assertEqual([result.subagent for result in results], ["safe-researcher"])
+
+    def test_ephemeral_review_is_template_bound_and_reads_only_approved_observations(self):
+        factory = EphemeralSubagentFactory()
+        agent = factory.create("evidence-critic", "检查价格与公告是否冲突")
+        result = factory.run_once(
+            agent,
+            SubagentTask(
+                stock_code="600519",
+                approved_observations=(
+                    {
+                        "tool": "market-price",
+                        "ok": True,
+                        "content": "timestamped price=100",
+                        "citations": [],
+                    },
+                ),
+            ),
+            llm=_FakeLlm(),
+        )
+        self.assertTrue(result.ok)
+        self.assertTrue(result.subagent.startswith("ephemeral-evidence-critic-"))
+        self.assertEqual(result.trace["allowed_tools"], [])
+        self.assertEqual(result.trace["permissions"], [])
+        self.assertEqual(result.trace["observation_count"], 1)
+
+    def test_ephemeral_review_rejects_unknown_template_and_missing_evidence(self):
+        factory = EphemeralSubagentFactory()
+        with self.assertRaises(ValueError):
+            factory.create("arbitrary-shell-agent", "do anything")
+        agent = factory.create("risk-reviewer", "检查风险")
+        with self.assertRaises(ValueError):
+            factory.run_once(agent, SubagentTask(stock_code="600519"), llm=_FakeLlm())
 
 
 if __name__ == "__main__":

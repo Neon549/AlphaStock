@@ -53,11 +53,88 @@ It checks deterministic workflow controls and runs in GitHub Actions before a
 main-branch deployment. The 8 committed cases are intentionally a smoke set:
 all must pass.
 
+The business-quality release gate is now a separate, fail-closed check. It
+must consume a frozen report containing code/governance regression, RAG and
+E2E non-regression, citation accuracy, P95 latency, token/cost budgets and
+red-team results:
+
+```bash
+python -m evaluation.release_quality_gate \
+  --report runtime/reports/release-quality-gate-input.json \
+  --out runtime/reports/release-quality-gate.json
+```
+
+Missing checks block the release. `release_allowed` is only a statement that
+the supplied candidate passed its declared budgets; it is not a production
+quality claim. The Chinese de-identified Gold contract is validated separately:
+
+```bash
+python -m evaluation.production_gold_intake \
+  --dataset path/to/gold.jsonl --kind rag --require-dual-review \
+  --out runtime/reports/gold-intake.json
+```
+
+Only `deidentified_session` and `production_bad_case` sources are accepted.
+Every row carries a split, corpus hash, evidence IDs, page citations, answer
+facts, abstention policy and review metadata. No candidate fixture can be
+promoted by changing its label; the untouched test split still needs a final
+manifest admission.
+
+For recorded runtime telemetry, aggregate operational SLOs without calling
+production:
+
+```bash
+python -m evaluation.operational_slo \
+  --runs runtime/reports/agent-telemetry.jsonl \
+  --out runtime/reports/operational-slo.json
+```
+
+The input must explicitly include concurrency, latency, provider/tool failure,
+retry, fallback, token and cost fields. Missing telemetry fails closed rather
+than being counted as zero failures.
+
+Safety red-team runs are scored separately and can feed the release gate:
+
+```bash
+python -m evaluation.red_team_eval \
+  --cases runtime/reports/red-team-cases.jsonl \
+  --runs runtime/reports/red-team-runs.jsonl \
+  --out runtime/reports/red-team.json
+```
+
+The evaluator only checks recorded traces and never creates an attack or runs a
+tool. `quality_gate_input` exposes the total case count and high-risk failures;
+an empty or unknown run set is invalid.
+
 `rag_golden_eval.py` now provides deterministic snapshot scoring for
 Recall@K, MRR, nDCG, citation hit rate, citation backlink correctness,
 abstention compliance and unsupported-answer rate. Its committed
 `fixtures/rag_corpus_v1.jsonl` plus `datasets/rag_golden_seed.jsonl` are a
 small contract fixture, not a claim of production quality.
+
+## News BGE rerank evaluation
+
+The production news path uses entity-verified, stock-scoped BM25 followed by
+the locally cached `BAAI/bge-reranker-v2-m3` Cross-Encoder. By default BGE only
+reorders the exact BM25/facet Top-5 evidence set; it cannot introduce a new
+document. Missing or malformed local-model output falls back to BM25 at
+runtime. A wider candidate pool is an explicit offline experiment.
+
+Reproduce the read-only remote snapshot diagnostic through the local SSH
+tunnel (the command does not write to PostgreSQL):
+
+```powershell
+python -m evaluation.run_remote_db_retrieval_eval `
+  --top-k 5 --candidate-k 5 --evidence-mode online `
+  --out runtime/reports/remote-db-retrieval-ablation.json
+```
+
+The report includes `bge_comparison`, which compares each BGE method with
+`bm25_scoped_faceted` using the fixed-set keyword-context diagnostic. It is a
+diagnostic only. To run the separate LLM/RAGAS layer, first generate answer
+samples from that exact report with `evaluation.prepare_remote_db_ragas_samples`,
+then run `evaluation.run_ragas_v02` in the isolated RAGAS environment. Do not
+interpret a single improved RAGAS metric as a universal quality lift.
 
 ## Public-filing candidate workflow
 

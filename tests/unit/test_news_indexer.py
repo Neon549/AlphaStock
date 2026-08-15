@@ -99,6 +99,24 @@ class NewsIndexerConfigTests(unittest.TestCase):
         self.assertNotIn("办公楼完成装修", snippet)
         self.assertIn("来源：中国基金报", snippet)
 
+    @patch("rag.news_indexer.get_stock_name", return_value="招商银行")
+    @patch("rag.news_indexer.get_conn")
+    def test_news_corpus_uses_canonical_name_not_untrusted_row_name(self, get_conn, _stock_name):
+        from rag.news_indexer import retrieve_news_corpus
+
+        connection = MagicMock()
+        cursor = connection.cursor.return_value.__enter__.return_value
+        cursor.fetchall.return_value = []
+        get_conn.return_value.__enter__.return_value = connection
+
+        retrieve_news_corpus("600036", days=30, limit=12)
+
+        sql, parameters = cursor.execute.call_args.args
+        self.assertIn("SELECT %s AS alias", sql)
+        self.assertNotIn("n.title ILIKE CONCAT('%%', n.stock_name, '%%')", sql)
+        self.assertEqual(parameters[0], "招商银行")
+        self.assertEqual(parameters[-1], 12)
+
 
 if __name__ == "__main__":
     unittest.main()

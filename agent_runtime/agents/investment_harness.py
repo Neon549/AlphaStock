@@ -26,9 +26,11 @@ from agent_runtime.reliability import (
     invoke_with_failure_policy,
 )
 from agent_runtime.agents.subagents import (
+    EphemeralSubagentFactory,
     SubagentRegistry,
     SubagentResult,
     SubagentTask,
+    ephemeral_subagent_factory,
     subagent_registry,
 )
 from agent_runtime.workflows.governance import evaluate_output_gate
@@ -64,6 +66,10 @@ _SKILL_CATALOG = {
         "permission": "market:read",
         "description": "Retrieve a timestamped current market-price evidence record. No arguments needed.",
     },
+    "market-history": {
+        "permission": "market:read",
+        "description": "Retrieve bounded daily K-line history as structured market evidence. No arguments needed.",
+    },
     "financial-indicators": {
         "permission": "market:read",
         "description": "Retrieve timestamped financial indicators with reporting-period freshness. No arguments needed.",
@@ -88,7 +94,7 @@ def _parse_action(raw: str) -> dict[str, Any] | None:
         # then normalise internally to the bounded ``subagents`` batch action.
         action["action"] = "subagents"
         action["subagents"] = [action.get("subagent")]
-    if action.get("action") not in {"skill", "subagents", "final"}:
+    if action.get("action") not in {"skill", "subagents", "create_subagent", "final"}:
         return None
     return action
 
@@ -212,10 +218,18 @@ def _run_memory_skill(query: str) -> dict[str, Any]:
 def _run_market_evidence_skill(state: dict[str, Any], tool_name: str) -> dict[str, Any]:
     """Expose current evidence to the parent trace instead of trusting a report string."""
     from agent_runtime.agents.research_harness import _market_metadata
-    from tools.akshare_tools import get_financial_indicator, get_stock_price
+    from tools.akshare_tools import get_financial_indicator, get_stock_history, get_stock_price
 
-    tool = get_stock_price if tool_name == "market-price" else get_financial_indicator
-    content = str(tool.invoke({"symbol": state["stock_code"]}))
+    tools = {
+        "market-price": get_stock_price,
+        "market-history": get_stock_history,
+        "financial-indicators": get_financial_indicator,
+    }
+    tool = tools[tool_name]
+    arguments = {"symbol": state["stock_code"]}
+    if tool_name == "market-history":
+        arguments["days"] = 30
+    content = str(tool.invoke(arguments))
     metadata = _market_metadata(content, tool_name)
     return {
         "ok": not content.startswith("[TOOL_ERROR]"),
@@ -243,7 +257,7 @@ def _execute_skill(
         return _run_backtest_skill(state, arguments)
     if skill_name == "memory-search":
         return _run_memory_skill(str(arguments.get("query") or state.get("analysis_query") or ""))
-    if skill_name in {"market-price", "financial-indicators"}:
+    if skill_name in {"market-price", "market-history", "financial-indicators"}:
         return _run_market_evidence_skill(state, skill_name)
     raise ValueError(f"unsupported skill: {skill_name}")
 
@@ -288,11 +302,47 @@ def _spawn_subagents(
         request_query=str(state.get("analysis_query") or state["stock_code"]),
         session_id=state.get("session_id"),
         document_evidence=str(state.get("user_doc_context") or ""),
+        approved_observations=(),
     )
     return [
         _normalise_subagent_result(result, result.subagent)
         for result in registry.spawn_many(names, task, granted_permissions=granted)
     ]
+
+
+def _spawn_ephemeral_subagent(
+    *,
+    template: str,
+    objective: object,
+    state: dict[str, Any],
+    observations: list[dict[str, Any]],
+    factory: EphemeralSubagentFactory,
+    llm: Any,
+) -> dict[str, Any]:
+    """Run one dynamic, no-tool review child and return a normalised result.
+
+    The child is intentionally constructed from the parent-owned template and
+    receives only compacted/persisted observations.  It is never added to the
+    long-lived specialist registry.
+    """
+    agent = factory.create(template, objective)
+    task = SubagentTask(
+        stock_code=state["stock_code"],
+        request_query=str(state.get("analysis_query") or state["stock_code"]),
+        session_id=state.get("session_id"),
+        document_evidence=str(state.get("user_doc_context") or ""),
+        approved_observations=tuple(observations),
+    )
+    result = factory.run_once(agent, task, llm=llm)
+    normalised = _normalise_subagent_result(result, agent.instance_id)
+    normalised["ephemeral_lifecycle"] = {
+        "instance_id": agent.instance_id,
+        "template": agent.template.name,
+        "objective": agent.objective,
+        "created": True,
+        "destroyed": True,
+    }
+    return normalised
 
 
 def _research_report(
@@ -325,6 +375,7 @@ def run_investment_agent_loop(
     skill_executor: Callable[..., dict[str, Any]] | None = None,
     subagent_executor: Callable[..., SubagentResult | dict[str, Any]] | None = None,
     subagent_registry_instance: SubagentRegistry | None = None,
+    ephemeral_subagent_factory_instance: EphemeralSubagentFactory | None = None,
 ) -> dict[str, Any]:
     """Run a bounded parent loop with allowlisted Skills and specialist subagents."""
     if planner_llm is None or final_llm is None:
@@ -348,6 +399,7 @@ def run_investment_agent_loop(
         if spec["permission"] in granted and (name != "document-rag" or state.get("session_id"))
     ]
     active_subagent_registry = subagent_registry_instance or subagent_registry
+    active_ephemeral_factory = ephemeral_subagent_factory_instance or ephemeral_subagent_factory
     available_subagents = active_subagent_registry.list_available(
         granted_permissions=granted,
         has_session_document=bool(state.get("session_id")),
@@ -362,6 +414,7 @@ def run_investment_agent_loop(
     trace: list[dict[str, Any]] = []
     executed: set[str] = set()
     executed_subagents: set[str] = set()
+    ephemeral_created = False
     executor = skill_executor or _execute_skill
     retry_budget = RetryBudget()
     model_failures: list[dict[str, Any]] = []
@@ -425,9 +478,11 @@ analysis Skill remains available only for compatibility. Other Skills cover docu
 backtesting and approved operational memory.
 Allowed Skills: {json.dumps(available, ensure_ascii=False)}
 Allowed Subagents: {json.dumps(available_subagents, ensure_ascii=False)}
+Allowed one-shot ephemeral review templates: {json.dumps(active_ephemeral_factory.list_available(), ensure_ascii=False)}
 Return exactly one of:
 {{"action":"skill","skill":"one allowed name","arguments":{{}},"reason":"..."}}
 {{"action":"subagents","subagents":["one or more allowed names"],"reason":"..."}}
+{{"action":"create_subagent","template":"one allowed ephemeral template","objective":"specific evidence-review goal","reason":"..."}}
 {{"action":"final","reason":"..."}}
 The stock code is server-bound to {state['stock_code']}; never request another code.
 Only choose backtest when the user requested it or it materially resolves a stated uncertainty.
@@ -435,6 +490,9 @@ Before finalising an investment conclusion, obtain at least one traceable curren
 market-price/financial observation or page-cited session-document observation.
 Do not choose evidence-reviewer in the same batch as another subagent: retrieve document evidence
 first, then decide whether a specialist should consume it in the next step.
+Create at most one ephemeral review child per run, only after prior observations exist and only when
+it materially checks conflicts, downside risk or missing verification. It has no tools, no write
+permissions, cannot call other agents and is destroyed after one result.
 Current request: {state.get('analysis_query') or state['stock_code']}
 Requested analysis focus: {state.get('analyst_focus') or 'all'}
 Server-derived task DAG: {json.dumps(task_summary, ensure_ascii=False)}
@@ -463,6 +521,80 @@ Previous observations: {json.dumps(compacted, ensure_ascii=False)}"""
         if action["action"] == "final":
             trace.append({"step": step + 1, "event": "final", "reason": action.get("reason", "")})
             break
+
+        if action["action"] == "create_subagent":
+            template = str(action.get("template") or "")
+            objective = action.get("objective")
+            available_templates = {
+                item["template"] for item in active_ephemeral_factory.list_available()
+            }
+            if ephemeral_created:
+                trace.append({"step": step + 1, "event": "ephemeral_subagent_denied", "reason": "one-shot budget exhausted"})
+                continue
+            if template not in available_templates:
+                trace.append({"step": step + 1, "event": "ephemeral_subagent_denied", "template": template, "reason": "unknown template"})
+                continue
+            if not observations:
+                trace.append({"step": step + 1, "event": "ephemeral_subagent_denied", "template": template, "reason": "no prior observations"})
+                continue
+            try:
+                result = _spawn_ephemeral_subagent(
+                    template=template,
+                    objective=objective,
+                    state=state,
+                    observations=observations,
+                    factory=active_ephemeral_factory,
+                    llm=final_llm,
+                )
+                ephemeral_created = True
+                lifecycle = result["ephemeral_lifecycle"]
+                trace.append({
+                    "step": step + 1,
+                    "event": "ephemeral_subagent_created",
+                    "instance_id": lifecycle["instance_id"],
+                    "template": lifecycle["template"],
+                    "objective": lifecycle["objective"],
+                })
+                result_ref = persist_tool_result(
+                    tool=f"subagent:{result['subagent']}",
+                    content=result["content"],
+                    source_kind=result["source_kind"],
+                    citations=result["citations"],
+                )
+                observation = {
+                    "tool": f"subagent:{result['subagent']}",
+                    "subagent": result["subagent"],
+                    "ok": result["ok"],
+                    "content": _trim(result["content"]),
+                    "citations": result["citations"],
+                    "source_kind": result["source_kind"],
+                    "result_ref": result_ref,
+                    "subagent_status": result["status"],
+                    "subagent_trace": result["trace"],
+                }
+                observations.append(observation)
+                trace.append({
+                    "step": step + 1,
+                    "event": "ephemeral_subagent_result",
+                    "instance_id": lifecycle["instance_id"],
+                    "ok": result["ok"],
+                    "status": result["status"],
+                    "result_ref": result_ref,
+                })
+                trace.append({
+                    "step": step + 1,
+                    "event": "ephemeral_subagent_destroyed",
+                    "instance_id": lifecycle["instance_id"],
+                    "template": lifecycle["template"],
+                })
+            except Exception as exc:
+                trace.append({
+                    "step": step + 1,
+                    "event": "ephemeral_subagent_error",
+                    "template": template,
+                    "error": str(exc)[:300],
+                })
+            continue
 
         if action["action"] == "subagents":
             raw_names = action.get("subagents")
@@ -596,6 +728,7 @@ Previous observations: {json.dumps(compacted, ensure_ascii=False)}"""
                 content=str(result.get("content") or ""),
                 source_kind=result.get("source_kind", "evidence"),
                 citations=result.get("citations", []),
+                stock_code=str(state.get("stock_code") or ""),
             )
             observation = {
                 "tool": skill_name,

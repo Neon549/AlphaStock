@@ -266,7 +266,36 @@ def get_history(stock_code: str):
 def get_stock_info(stock_code: str):
     try:
         from tools.akshare_tools import get_stock_price
+        from market.evidence import build_market_evidence_record, persist_market_evidence_record
 
-        return {"stock_code": stock_code, "info": get_stock_price.invoke({"symbol": stock_code})}
+        info = get_stock_price.invoke({"symbol": stock_code})
+        record = build_market_evidence_record("market-price", stock_code, str(info))
+        evidence_id = persist_market_evidence_record(record) if record else None
+        return {"stock_code": stock_code, "info": info, "evidence_id": evidence_id}
     except Exception:
         raise HTTPException(status_code=500, detail="stock info failed")
+
+
+@router.get("/stocks/evidence/{stock_code}")
+def get_market_evidence(stock_code: str, evidence_type: str | None = None, limit: int = 20):
+    """Return structured market/financial snapshots without raw prompt text."""
+
+    allowed_types = {"quote", "financial_indicator", "daily_history"}
+    if evidence_type and evidence_type not in allowed_types:
+        raise HTTPException(status_code=400, detail="unsupported evidence_type")
+    try:
+        from market.evidence import get_latest_market_evidence
+
+        return {
+            "stock_code": stock_code,
+            "evidence_type": evidence_type,
+            "items": get_latest_market_evidence(
+                stock_code,
+                evidence_type=evidence_type,
+                limit=limit,
+            ),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        raise HTTPException(status_code=503, detail="market evidence unavailable")

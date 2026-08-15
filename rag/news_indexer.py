@@ -24,6 +24,7 @@ import jieba
 from psycopg2.extras import execute_values
 
 from db import get_conn
+from tools.stock_name_dict import get_stock_name
 
 # ── 配置 ──────────────────────────────────────────────────────────────
 
@@ -515,17 +516,50 @@ def retrieve_news_corpus(
     """Return a bounded stock-scoped title corpus without embedding inference."""
 
     cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    canonical_name = get_stock_name(stock_code)
+    # A row's stock_name originates from an upstream news feed and may be
+    # mislabeled. Use the local code/name mapping plus official-disclosure
+    # aliases as the entity authority instead of trusting that row value.
+    if canonical_name == "名称未验证":
+        canonical_name = ""
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT title, stock_name, pub_time, full_text, source_kind
-                FROM news_vectors
-                WHERE stock_code = %s AND date >= %s
-                ORDER BY date DESC, pub_time DESC
+                WITH trusted_entity_aliases AS (
+                    SELECT %s AS alias
+                    UNION
+                    -- A listed company can change its short name.  Official
+                    -- disclosures carry the exchange-recognised name, so use
+                    -- those names as a trusted alias set for news headlines.
+                    SELECT DISTINCT stock_name AS alias
+                    FROM news_vectors
+                    WHERE stock_code = %s
+                      AND COALESCE(source_kind, 'news') = 'announcement'
+                      AND stock_name IS NOT NULL
+                      AND stock_name !~ '^[0-9]{6}$'
+                )
+                SELECT n.title, n.stock_name, n.pub_time, n.full_text, n.source_kind
+                FROM news_vectors AS n
+                WHERE n.stock_code = %s
+                  AND n.date >= %s
+                  -- Some upstream "stock news" feeds include sector lists
+                  -- and unrelated company headlines.  A persisted row's
+                  -- stock_code alone is therefore not sufficient evidence
+                  -- that its *headline* is about the requested company.
+                  AND (
+                    COALESCE(n.source_kind, 'news') = 'announcement'
+                    OR n.title LIKE CONCAT('%%', n.stock_code, '%%')
+                    OR EXISTS (
+                        SELECT 1
+                        FROM trusted_entity_aliases AS aliases
+                        WHERE n.title ILIKE CONCAT('%%', aliases.alias, '%%')
+                    )
+                  )
+                ORDER BY n.date DESC, n.pub_time DESC
                 LIMIT %s
                 """,
-                (stock_code, cutoff, limit),
+                (canonical_name, stock_code, stock_code, cutoff, limit),
             )
             rows = cur.fetchall()
     return [

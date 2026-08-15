@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import config.llm_config as llm_cfg
+from agent_runtime.planning.constrained_decomposition import constrained_decompose
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ _BACKTEST_KEYWORDS = ["回测", "策略验证"]
 _SCAN_KEYWORDS = ["全市场扫描", "扫描", "买入信号", "信号扫描"]
 _SCREEN_KEYWORDS = ["股票筛选", "选股", "筛选"]
 _DIRECT_TRADE_KEYWORDS = ["下单", "执行交易", "帮我买入", "帮我卖出", "直接买入", "直接卖出"]
-_SEQUENCE_KEYWORDS = ["然后", "再", "之后", "随后", "基于上述", "根据分析"]
+_SEQUENCE_KEYWORDS = ["先", "然后", "再", "接着", "之后", "随后", "基于上述", "根据分析"]
 
 _TECHNICAL_KW = [
     "kdj", "macd", "均线", "技术面", "k线", "趋势", "ma20", "布林", "rsi", "成交量", "technical",
@@ -47,6 +48,18 @@ _SENTIMENT_KW = ["新闻", "情绪", "舆情", "情感", "消息", "利好", "�
 _VALID_INTENTS = {1, 2, 3, 4}
 _VALID_FOCUSES = {"technical", "fundamental", "sentiment", "all"}
 _STOCK_CODE_PATTERN = re.compile(r"(?<!\d)([036]\d{5}|688\d{3})(?!\d)")
+_BACKTEST_WINDOW_PATTERN = re.compile(
+    r"(?:近\s*[0-9一二三四五六七八九十]+\s*(?:日|天|周|月|年)|过去\s*[0-9一二三四五六七八九十]+\s*(?:日|天|周|月|年)|"
+    r"\d{4}[./-]\d{1,2}[./-]\d{1,2}\s*(?:至|到|[-~])\s*\d{4}[./-]\d{1,2}[./-]\d{1,2})"
+)
+_AMBIGUOUS_STOCK_ALIASES = {
+    "半导", "银行", "股份", "集团", "科技", "能源", "智能", "电气", "医药", "证券", "电子",
+}
+_RULE_TYPO_REPLACEMENTS = {
+    "分折": "分析",
+    "回册": "回测",
+    "筛選": "筛选",
+}
 
 _FASTTEXT_MODEL_PATH = Path(__file__).parent.parent / "models" / "intent_classifier.bin"
 _FASTTEXT_THRESHOLD = float(os.getenv("INTENT_FASTTEXT_THRESHOLD", "0.85"))
@@ -331,14 +344,72 @@ def _load_fasttext_model():
     return _fasttext_model
 
 
-def _find_stock_in_query(query: str) -> tuple[Optional[str], Optional[str], Optional[str]]:
+def _find_stock_matches_in_query(query: str) -> list[tuple[str, str, str]]:
+    """Find distinct locally-verifiable stocks, ordered by their mention.
+
+    A task contract currently contains one stock slot.  Returning all matches
+    lets callers fail closed rather than silently binding a multi-stock
+    request to whichever name happens to be longest in the local dictionary.
+    The short aliases are accepted only when they uniquely identify a local
+    canonical name (for example, ``茅台``), so a common two-character fragment
+    cannot choose a ticker accidentally.
+    """
     _load_stock_map()
     clean_query = _clean_stock_name(query)
-    for name in sorted(_STOCK_MAP, key=len, reverse=True):
-        if len(name) >= 2 and name in clean_query:
-            code = _STOCK_MAP[name]
-            return _CODE_MAP.get(code, name), code, _NAME_SOURCE.get(name, "local_map")
-    return None, None, None
+    candidates: dict[str, tuple[int, str, str]] = {}
+
+    def add(code: str, position: int, name: Optional[str], source: Optional[str]) -> None:
+        if position < 0:
+            return
+        current = candidates.get(code)
+        candidate = (position, name or _CODE_MAP.get(code, ""), source or "local_map")
+        if current is None or candidate[0] < current[0]:
+            candidates[code] = candidate
+
+    for match in _STOCK_CODE_PATTERN.finditer(clean_query):
+        code = match.group(1)
+        add(code, match.start(), _CODE_MAP.get(code), "explicit_query")
+
+    aliases: dict[str, set[str]] = {}
+    for name, code in _STOCK_MAP.items():
+        position = clean_query.find(name)
+        add(code, position, _CODE_MAP.get(code, name), _NAME_SOURCE.get(name, "local_map"))
+        for length in range(2, min(4, len(name)) + 1):
+            alias = name[-length:]
+            aliases.setdefault(alias, set()).add(code)
+    for alias, codes in aliases.items():
+        if len(codes) != 1 or alias in _AMBIGUOUS_STOCK_ALIASES:
+            continue
+        code = next(iter(codes))
+        add(code, clean_query.find(alias), _CODE_MAP.get(code), _CODE_SOURCE.get(code, "local_map"))
+
+    return [
+        (name, code, source)
+        for _position, name, source, code in sorted(
+            (position, name, source, code) for code, (position, name, source) in candidates.items()
+        )
+    ]
+
+
+def _find_stock_in_query(query: str) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    matches = _find_stock_matches_in_query(query)
+    return matches[0] if matches else (None, None, None)
+
+
+def _detect_backtest_window(query: str) -> Optional[str]:
+    match = _BACKTEST_WINDOW_PATTERN.search(query)
+    return match.group(0).strip() if match else None
+
+
+def _has_direct_trade_request(query: str) -> bool:
+    """Recognise explicit buy/sell wording without confusing scan signals with orders."""
+    if any(keyword in query for keyword in _DIRECT_TRADE_KEYWORDS):
+        return True
+    return bool(
+        _extract_stock_code(query)
+        and any(keyword in query for keyword in ("买入", "卖出"))
+        and "信号" not in query
+    )
 
 
 def _fasttext_layer(query: str) -> Optional[dict[str, Any]]:
@@ -387,10 +458,25 @@ def _rule_layer(query: str) -> Optional[dict[str, Any]]:
     if q.lower() in _GREETINGS:
         return _result(intent=1, source="rule", confidence=1.0)
 
+    matched_stocks = _find_stock_matches_in_query(q)
+    operational_request = any(keyword in q.lower() for keyword in (
+        *_ANALYSIS_REQUEST_KEYWORDS,
+        *_SYSTEM_KEYWORDS,
+        *_DIRECT_TRADE_KEYWORDS,
+    ))
+    if len(matched_stocks) > 1 and operational_request:
+        return _result(
+            intent=4,
+            reply_hint=_reply_hint(),
+            source="rule",
+            confidence=1.0,
+            slot_warnings=["multiple_stock_references_require_clarification"],
+        )
+
     # A transaction is never a normal research route.  Decomposition below
     # still preserves preceding research tasks, but execution must stop at the
     # explicit confirmation boundary.
-    if any(keyword in q for keyword in _DIRECT_TRADE_KEYWORDS):
+    if _has_direct_trade_request(q):
         return _result(
             intent=4,
             reply_hint="检测到下单或交易请求。系统不会直接交易；请先确认研究结果和交易参数。",
@@ -431,6 +517,35 @@ def _rule_layer(query: str) -> Optional[dict[str, Any]]:
             confidence=1.0,
             slot_sources=sources,
             slot_warnings=warnings,
+        )
+
+    # Do not make the tiny fastText model the only way to handle a local
+    # company name or an unambiguous abbreviation.  This remains below the
+    # discussion hard-negative rule, so a research-looking company mention is
+    # never forced into an analysis route.
+    if matched_stocks and any(keyword in q.lower() for keyword in _ANALYSIS_REQUEST_KEYWORDS):
+        name, code, source = matched_stocks[0]
+        focus = _detect_focus(q) or "all"
+        return _result(
+            intent=2,
+            stock_name=name,
+            stock_code=code,
+            analyst_focus=focus,
+            source="rule",
+            confidence=1.0,
+            slot_sources={
+                "stock_name": source,
+                "stock_code": source,
+                "analyst_focus": "rule_keywords" if focus != "all" else "default",
+            },
+        )
+    if _detect_focus(q) and any(keyword in q.lower() for keyword in _ANALYSIS_REQUEST_KEYWORDS):
+        return _result(
+            intent=4,
+            reply_hint=_reply_hint(),
+            source="rule",
+            confidence=1.0,
+            slot_warnings=["analysis_requires_resolved_stock_code"],
         )
     return None
 
@@ -509,6 +624,14 @@ def _llm_result(query: str) -> dict[str, Any]:
 
 def _task_slots(query: str, parsed: dict[str, Any]) -> tuple[dict[str, Optional[str]], dict[str, str], list[str]]:
     """Resolve one server-validated slot set to reuse across sibling tasks."""
+    matched_stocks = _find_stock_matches_in_query(query)
+    if len(matched_stocks) > 1:
+        return {
+            "stock_name": None,
+            "stock_code": None,
+            "analyst_focus": _detect_focus(query),
+            "backtest_window": _detect_backtest_window(query),
+        }, {}, ["multiple_stock_references_require_clarification"]
     candidate_name = parsed.get("stock_name")
     candidate_code = parsed.get("stock_code")
     if not candidate_name:
@@ -533,6 +656,7 @@ def _task_slots(query: str, parsed: dict[str, Any]) -> tuple[dict[str, Optional[
         "stock_name": stock_name,
         "stock_code": stock_code,
         "analyst_focus": focus,
+        "backtest_window": _detect_backtest_window(query),
     }, sources, warnings
 
 
@@ -547,12 +671,18 @@ def _new_sub_intent(
     task_slots = {
         key: value for key, value in slots.items()
         if value is not None
-        and key in ({"stock_code", "stock_name", "analyst_focus"} if intent == "investment_analysis" else {"stock_code", "stock_name"})
+        and key in (
+            {"stock_code", "stock_name", "analyst_focus"}
+            if intent == "investment_analysis"
+            else {"stock_code", "stock_name", "backtest_window"}
+        )
         and intent in {"investment_analysis", "backtest", "discussion", "trade_action"}
     }
     missing_slots = []
-    if intent in {"investment_analysis", "backtest"} and not task_slots.get("stock_code"):
+    if intent in {"investment_analysis", "backtest", "trade_action"} and not task_slots.get("stock_code"):
         missing_slots.append("stock_code")
+    if intent == "backtest" and not task_slots.get("backtest_window"):
+        missing_slots.append("backtest_window")
     return {
         "task_id": task_id,
         "intent": intent,
@@ -560,6 +690,42 @@ def _new_sub_intent(
         "slots": task_slots,
         "missing_slots": missing_slots,
         "requires_confirmation": requires_confirmation,
+    }
+
+
+def _first_keyword_position(query: str, keywords: list[str]) -> int:
+    positions = [query.find(keyword) for keyword in keywords if query.find(keyword) >= 0]
+    return min(positions) if positions else len(query) + 1
+
+
+def _compound_metadata(query: str, sub_intents: list[dict[str, Any]]) -> dict[str, Any]:
+    """Classify task orchestration without adding a fifth top-level intent."""
+
+    task_intents = [str(task["intent"]) for task in sub_intents]
+    executable = [intent for intent in task_intents if intent != "clarify"]
+    if len(executable) <= 1:
+        return {
+            "detected": False,
+            "classification": "single",
+            "execution_policy": "single_task",
+            "task_intents": task_intents,
+            "source": "deterministic_orchestration",
+        }
+    if "trade_action" in executable:
+        classification = "confirmation_gated"
+        execution_policy = "confirmation_gate"
+    elif any(keyword in query for keyword in _SEQUENCE_KEYWORDS):
+        classification = "sequential"
+        execution_policy = "sequential_stages"
+    else:
+        classification = "parallel"
+        execution_policy = "parallel_stage"
+    return {
+        "detected": True,
+        "classification": classification,
+        "execution_policy": execution_policy,
+        "task_intents": task_intents,
+        "source": "deterministic_orchestration",
     }
 
 
@@ -573,21 +739,19 @@ def _decompose_sub_intents(query: str, parsed: dict[str, Any]) -> tuple[list[dic
     """
     q = query.lower()
     slots, slot_sources, warnings = _task_slots(query, parsed)
-    sub_intents: list[dict[str, Any]] = []
+    requested_tasks: list[tuple[str, int, bool]] = []
 
     analysis_requested = (
         parsed.get("intent") == 2
         or bool(slots.get("stock_code")) and any(keyword in q for keyword in _ANALYSIS_REQUEST_KEYWORDS)
     )
-    analysis_task_id: Optional[str] = None
     if analysis_requested:
         if not slots.get("analyst_focus"):
             slots["analyst_focus"] = "all"
             slot_sources["analyst_focus"] = "default"
-        analysis_task_id = "analysis-1"
-        sub_intents.append(_new_sub_intent(analysis_task_id, "investment_analysis", slots=slots))
+        requested_tasks.append(("investment_analysis", _first_keyword_position(q, _ANALYSIS_REQUEST_KEYWORDS), False))
     elif parsed.get("intent") == 1:
-        sub_intents.append(_new_sub_intent("discussion-1", "discussion", slots=slots))
+        requested_tasks.append(("discussion", len(q) + 1, False))
 
     system_tasks: list[str] = []
     if any(keyword in q for keyword in _BACKTEST_KEYWORDS):
@@ -599,23 +763,47 @@ def _decompose_sub_intents(query: str, parsed: dict[str, Any]) -> tuple[list[dic
     if parsed.get("intent") == 3 and not system_tasks:
         system_tasks.append("system_action")
 
-    sequential = any(keyword in q for keyword in _SEQUENCE_KEYWORDS)
     for task_intent in list(dict.fromkeys(system_tasks)):
-        task_id = f"{task_intent}-1"
-        dependencies = [analysis_task_id] if analysis_task_id and sequential else []
-        sub_intents.append(_new_sub_intent(task_id, task_intent, slots=slots, depends_on=dependencies))
+        keywords = {
+            "backtest": _BACKTEST_KEYWORDS,
+            "market_scan": _SCAN_KEYWORDS,
+            "strategy_screen": _SCREEN_KEYWORDS,
+            "system_action": _SYSTEM_KEYWORDS,
+        }[task_intent]
+        requested_tasks.append((task_intent, _first_keyword_position(q, keywords), False))
 
-    if any(keyword in query for keyword in _DIRECT_TRADE_KEYWORDS):
-        dependencies = [task["task_id"] for task in sub_intents]
+    if _has_direct_trade_request(query):
+        requested_tasks.append(("trade_action", _first_keyword_position(q, _DIRECT_TRADE_KEYWORDS), True))
+
+    # Explicit sequence words form a chain in the action order expressed by
+    # the user.  Without one, read-only actions remain parallel.  Trading is
+    # always confirmation-gated after all previous work.
+    sequential = any(keyword in q for keyword in _SEQUENCE_KEYWORDS)
+    requested_tasks.sort(key=lambda task: (task[1], task[0]))
+    sub_intents: list[dict[str, Any]] = []
+    completed_task_ids: list[str] = []
+    intent_counts: dict[str, int] = {}
+    for task_intent, _position, requires_confirmation in requested_tasks:
+        intent_counts[task_intent] = intent_counts.get(task_intent, 0) + 1
+        task_id = "analysis-1" if task_intent == "investment_analysis" else (
+            "trade-action-1" if task_intent == "trade_action" else f"{task_intent}-{intent_counts[task_intent]}"
+        )
+        if requires_confirmation:
+            dependencies = list(completed_task_ids)
+        elif sequential and completed_task_ids:
+            dependencies = [completed_task_ids[-1]]
+        else:
+            dependencies = []
         sub_intents.append(
             _new_sub_intent(
-                "trade-action-1",
-                "trade_action",
+                task_id,
+                task_intent,
                 slots=slots,
                 depends_on=dependencies,
-                requires_confirmation=True,
+                requires_confirmation=requires_confirmation,
             )
         )
+        completed_task_ids.append(task_id)
 
     if not sub_intents:
         sub_intents.append(_new_sub_intent("clarify-1", "clarify", slots=slots))
@@ -628,6 +816,7 @@ def _attach_sub_intents(query: str, parsed: dict[str, Any]) -> dict[str, Any]:
     parsed["sub_intents"] = sub_intents
     parsed["multi_intent"] = len(sub_intents) > 1
     parsed["sub_intent_source"] = "deterministic_decomposition"
+    parsed["compound_intent"] = _compound_metadata(query, sub_intents)
     parsed["slot_sources"] = {**decomposition_sources, **parsed.get("slot_sources", {})}
     parsed["slot_warnings"] = list(dict.fromkeys([
         *parsed.get("slot_warnings", []),
@@ -653,14 +842,59 @@ def _attach_sub_intents(query: str, parsed: dict[str, Any]) -> dict[str, Any]:
     return parsed
 
 
+def _attach_constrained_decomposition(query: str, parsed: dict[str, Any]) -> dict[str, Any]:
+    """Upgrade only complex read-only requests after strict plan validation.
+
+    The LLM receives neither permissions nor execution authority.  If it is
+    unavailable or returns an invalid plan, the deterministic result (usually
+    a clarification for multi-stock input) is left untouched.
+    """
+    known_codes = [code for _name, code, _source in _find_stock_matches_in_query(query)]
+    proposal = constrained_decompose(query, llm_cfg.quick_llm, known_stock_codes=known_codes)
+    if proposal is None:
+        return parsed
+    sub_intents = proposal["sub_intents"]
+    result = dict(parsed)
+    result["sub_intents"] = sub_intents
+    result["multi_intent"] = len(sub_intents) > 1
+    result["sub_intent_source"] = "constrained_llm_decomposition"
+    result["decomposition_audit"] = {
+        "original_query": proposal["original_query"],
+        "source": proposal["decomposition_source"],
+        "reason": proposal["decomposition_reason"],
+        "execution_authority": "validated_task_graph_only",
+    }
+    result["compound_intent"] = _compound_metadata(query, sub_intents)
+    result["intent"] = 2
+    result["stock_codes"] = list(dict.fromkeys(
+        code for task in sub_intents for code in task.get("slots", {}).get("stock_codes", [])
+    ))
+    analysis_task = next((task for task in sub_intents if task["intent"] == "investment_analysis"), None)
+    if analysis_task:
+        result["primary_task_id"] = analysis_task["task_id"]
+        result["stock_code"] = analysis_task["slots"].get("stock_code")
+        result["stock_name"] = analysis_task["slots"].get("stock_name")
+        result["analyst_focus"] = analysis_task["slots"].get("analyst_focus")
+    else:
+        # A comparison has multiple entities; do not pretend it is a
+        # single-stock analysis or choose an arbitrary primary ticker.
+        result["primary_task_id"] = sub_intents[0]["task_id"]
+        result["stock_code"] = None
+        result["stock_name"] = None
+        result["analyst_focus"] = None
+    return result
+
+
 def parse_intent(query: str) -> dict[str, Any]:
     """Return validated intent and slots for the runtime's routing contract."""
     normalized_query = str(query or "").strip()
+    for typo, corrected in _RULE_TYPO_REPLACEMENTS.items():
+        normalized_query = normalized_query.replace(typo, corrected)
     rule_result = _rule_layer(normalized_query)
     if rule_result is not None:
-        return _attach_sub_intents(normalized_query, rule_result)
+        return _attach_constrained_decomposition(normalized_query, _attach_sub_intents(normalized_query, rule_result))
 
     fasttext_result = _fasttext_layer(normalized_query)
     if fasttext_result is not None:
-        return _attach_sub_intents(normalized_query, fasttext_result)
-    return _attach_sub_intents(normalized_query, _llm_result(normalized_query))
+        return _attach_constrained_decomposition(normalized_query, _attach_sub_intents(normalized_query, fasttext_result))
+    return _attach_constrained_decomposition(normalized_query, _attach_sub_intents(normalized_query, _llm_result(normalized_query)))

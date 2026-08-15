@@ -43,6 +43,10 @@ _TOOL_CATALOG = {
         "permission": "market:read",
         "description": "Get current price and basic market verification. No arguments needed.",
     },
+    "market-history": {
+        "permission": "market:read",
+        "description": "Get bounded daily K-line history for deterministic price evidence. No arguments needed.",
+    },
     "financial-indicators": {
         "permission": "market:read",
         "description": "Get financial indicators for the requested stock. No arguments needed.",
@@ -184,15 +188,19 @@ def _default_executor(
             "source_kind": "operational_memory",
         }
 
-    from tools.akshare_tools import get_financial_indicator, get_stock_news, get_stock_price
+    from tools.akshare_tools import get_financial_indicator, get_stock_history, get_stock_news, get_stock_price
 
     tools = {
         "market-price": get_stock_price,
+        "market-history": get_stock_history,
         "financial-indicators": get_financial_indicator,
         "stock-news": get_stock_news,
     }
     tool = tools[tool_name]
-    content = tool.invoke({"symbol": stock_code})
+    arguments = {"symbol": stock_code}
+    if tool_name == "market-history":
+        arguments["days"] = 30
+    content = tool.invoke(arguments)
     metadata = _market_metadata(content, tool_name)
     return {
         "ok": not str(content).startswith("[TOOL_ERROR]"),
@@ -351,6 +359,7 @@ Previous tool observations:
             content=str(result.get("content", "")),
             source_kind=source_kind,
             citations=result.get("citations", []),
+            stock_code=stock_code,
         )
         event = {
             "step": step + 1,

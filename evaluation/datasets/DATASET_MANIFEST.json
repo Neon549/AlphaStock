@@ -21,6 +21,26 @@
       "claim_limit": "Do not report as online intent-routing accuracy."
     },
     {
+      "id": "intent-compound-routing-smoke-v1",
+      "path": "data/intent/eval_compound_smoke_v1.jsonl",
+      "tier": "smoke",
+      "case_count": 14,
+      "sha256": "3c703f4f4fbb148232f64abe4a0c62da13ba74e3988388c9962f4815581904a4",
+      "purpose": "Seeded compound-intent detection, orchestration and safety-boundary regression fixture.",
+      "claim_limit": "Do not report as online intent-routing accuracy."
+    },
+    {
+      "id": "intent-routing-robustness-candidate-v1",
+      "path": "data/intent/eval_robustness_candidate_v1.jsonl",
+      "tier": "candidate",
+      "case_count": 21,
+      "sha256": "6ffa998fa50d1f3da5e12da46c658762469b3732235643b5bda433a985536057",
+      "routing_snapshot": "sha256:4fbc24a7bde297849e46501efdf6256e82888e2889e0a5302b9ff8eabe3428ce",
+      "review_status": "synthetic_candidate_cases_pending_independent_review",
+      "purpose": "Synthetic, bucketed intent-routing stress cases for aliases, typos, multi-stock ambiguity, backtest windows, clarification, high-risk trade wording and compound tasks.",
+      "claim_limit": "Candidate diagnostics only; authored test wording is not real user traffic and must not support online or resume accuracy claims."
+    },
+    {
       "id": "workflow-governance-contract-v1",
       "path": "evaluation/datasets/workflow_regression.jsonl",
       "tier": "contract",
@@ -50,6 +70,39 @@
       "review_status": "template_generated_pending_human_review",
       "purpose": "Synthetic alias, stock-code, colloquial and filing-anchored retrieval stress set.",
       "claim_limit": "Synthetic candidate traffic; do not present as a real-user distribution or resume metric."
+    },
+    {
+      "id": "public-filings-query-rewrite-stress-candidate-v1",
+      "path": "evaluation/corpus/production_candidate_v1/rag_query_rewrite_stress_candidate_v1.jsonl",
+      "tier": "candidate",
+      "case_count": 16,
+      "sha256": "4dcec820724b7f4d7715eef9220f8a7e24b6133eafea3ae942e86806db72463b",
+      "corpus_snapshot": "sha256:dbb2217a11586b10d44b478345341b8cb844ee88254ae3af62ebc5c4c66f4e35",
+      "review_status": "synthetic_alias_and_colloquial_stress_pending_independent_review",
+      "purpose": "Template-generated alias and colloquial finance wording stress set for deterministic query rewrite diagnostics.",
+      "claim_limit": "Synthetic candidate diagnostics only; it is not real-user traffic, independently human-reviewed evidence, a production metric, or a resume metric."
+    },
+    {
+      "id": "financial-agent-e2e-candidate-v1",
+      "path": "evaluation/datasets/financial_agent_e2e_candidate_v1.jsonl",
+      "tier": "candidate",
+      "case_count": 12,
+      "sha256": "67579511719571ad88e3f856dd3652c6a479471131e4c0f8ff6335b24e9b2946",
+      "corpus_snapshot": "sha256:dbb2217a11586b10d44b478345341b8cb844ee88254ae3af62ebc5c4c66f4e35",
+      "review_status": "synthetic_candidate_contract_pending_independent_review",
+      "purpose": "First frozen FinancialAgent E2E task/rubric contract covering research, clarification, compound planning, high-risk gates, citation, time semantics and recovery.",
+      "claim_limit": "Candidate evaluator-contract fixture only; it does not measure real-user, production, model-quality or resume success."
+    },
+    {
+      "id": "financial-agent-e2e-review-queue-v1",
+      "path": "evaluation/datasets/financial_agent_e2e_review_queue_v1.jsonl",
+      "tier": "candidate",
+      "case_count": 96,
+      "sha256": "45c498e7159d54d75a1c843c2462eb99d332862fe4cde32f2a17301e18df3375",
+      "corpus_snapshot": "sha256:dbb2217a11586b10d44b478345341b8cb844ee88254ae3af62ebc5c4c66f4e35",
+      "review_status": "review_queue_with_no_completed_independent_reviews",
+      "purpose": "96-case FinancialAgent E2E reviewer queue with frozen task/tool/document fixtures and atomic rubrics across research, routing, safety and recovery categories.",
+      "claim_limit": "Synthetic/public-source candidate review queue only; no item may be reported as real-user, independently reviewed, production or resume success until separate source and review admission complete."
     },
     {
       "id": "heldout-public-filings-manual-expert-candidate-v1",

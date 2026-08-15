@@ -17,6 +17,10 @@ class TaskGraphError(ValueError):
 
 _TASK_SKILLS: dict[str, tuple[str, ...]] = {
     "investment_analysis": ("analysis",),
+    # Comparison is a validated research request but has no current one-shot
+    # execution binding.  It remains visible for the dedicated comparison
+    # endpoint instead of being faked as a single-stock analysis.
+    "comparison": (),
     "backtest": ("backtest",),
     # The current chat harness has no direct scan/screening tool binding.  The
     # plan remains visible and the API can route it to its dedicated endpoint.
@@ -57,16 +61,22 @@ def _normalise_task(raw: dict[str, Any], index: int) -> dict[str, Any]:
         raise TaskGraphError(f"slots for {task_id} must be an object")
     slots = {
         key: value for key, value in raw_slots.items()
-        if key in {"stock_code", "stock_name", "analyst_focus", "strategy"}
+        if key in {"stock_code", "stock_name", "analyst_focus", "strategy", "backtest_window"}
         and (value is None or isinstance(value, (str, int, float, bool)))
     }
+    stock_codes = raw_slots.get("stock_codes")
+    if isinstance(stock_codes, list) and all(isinstance(code, str) and code.strip() for code in stock_codes):
+        slots["stock_codes"] = list(dict.fromkeys(code.strip() for code in stock_codes))
     missing_slots = list(dict.fromkeys(
         str(item) for item in (raw.get("missing_slots") or [])
-        if str(item) in {"stock_code", "strategy"}
+        if str(item) in {"stock_code", "stock_codes", "strategy", "backtest_window"}
     ))
     if intent in _STOCK_REQUIRED and not _as_string_or_none(slots.get("stock_code")):
         if "stock_code" not in missing_slots:
             missing_slots.append("stock_code")
+    if intent == "comparison" and len(slots.get("stock_codes") or []) != 2:
+        if "stock_codes" not in missing_slots:
+            missing_slots.append("stock_codes")
 
     requires_confirmation = bool(raw.get("requires_confirmation", False)) or intent == "trade_action"
     return {

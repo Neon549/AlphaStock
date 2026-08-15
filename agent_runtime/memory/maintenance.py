@@ -171,12 +171,26 @@ def run_one_extraction_job(llm: Any | None = None) -> dict[str, Any] | None:
         from agent_runtime.memory.candidates import create_candidate
         drafts = extract_candidate_drafts(transcript, llm)
         candidate_ids = [
-            create_candidate(title=draft["title"], content=draft["content"], category=draft["category"],
-                             source_run_id=transcript[-1].get("run_id"), requested_by=job["actor_id"]).candidate_id
+            create_candidate(
+                title=draft["title"], content=draft["content"], category=draft["category"],
+                source_run_id=transcript[-1].get("run_id"), requested_by=job["actor_id"],
+            ).candidate_id
             for draft in drafts
         ]
+        from agent_runtime.memory.candidates import get_candidate
+        resolved_candidates = [get_candidate(candidate_id) for candidate_id in candidate_ids]
+        auto_approved_ids = [
+            candidate_id for candidate_id, candidate in zip(candidate_ids, resolved_candidates)
+            if candidate and candidate.get("status") == "approved"
+        ]
         _advance_watermark(job["session_id"], int(job["source_to_id"]))
-        payload = {"candidate_ids": candidate_ids, "source_turns": len(transcript), "auto_approved": False}
+        payload = {
+            "candidate_ids": candidate_ids,
+            "source_turns": len(transcript),
+            "auto_approved": bool(auto_approved_ids),
+            "auto_approved_ids": auto_approved_ids,
+            "index_sync_required": bool(auto_approved_ids),
+        }
         _finish_job(job["job_id"], status="completed", payload=payload)
         return {"job_id": job["job_id"], "status": "completed", **payload}
     except Exception as exc:

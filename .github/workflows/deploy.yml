@@ -20,11 +20,14 @@ jobs:
           pip install -r requirements-ci.txt
       - name: Run offline governance regression suite
         env:
-          # Tests import the model-routing module but do not make provider calls.
-          # Keep CI deterministic without exposing production API credentials.
+          # Keep CI deterministic without reading a checked-out .env file or
+          # exposing production credentials. tests/conftest.py blocks sockets
+          # for the complete pytest collection.
           DEEPSEEK_API_KEY: ci-test-placeholder
           DASHSCOPE_API_KEY: ci-test-placeholder
-        run: python -m unittest discover -s tests -t . -p "test_*.py"
+          ALPHASTOCK_SKIP_DOTENV: "1"
+          ALPHASTOCK_OFFLINE_TESTS: "1"
+        run: python -m pytest -q tests
 
   deploy:
     needs: regression

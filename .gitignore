@@ -12,6 +12,8 @@ rag/faiss_index/
 
 # Generated runtime state
 runtime/
+.pytest-rerank-temp/
+.pytest-compound-temp/
 cache/
 reports/
 tmp/

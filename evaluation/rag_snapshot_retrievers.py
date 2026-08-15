@@ -116,6 +116,12 @@ def build_reranked_retriever(
         if not candidates:
             return []
         scores = reranker(query, [str(item["content"]) for item in candidates])
+        if len(scores) != len(candidates):
+            raise ValueError(
+                f"reranker returned {len(scores)} scores for {len(candidates)} candidates"
+            )
+        if not all(math.isfinite(float(score)) for score in scores):
+            raise ValueError("reranker returned a non-finite score")
         ranked = sorted(
             zip(candidates, scores),
             key=lambda item: (-float(item[1]), str(item[0]["evidence_id"])),

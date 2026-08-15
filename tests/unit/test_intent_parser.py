@@ -87,6 +87,8 @@ class IntentParserTests(unittest.TestCase):
         self.assertEqual(result["intent"], 2)
         self.assertEqual(result["analyst_focus"], "all")
         self.assertEqual(result["slot_sources"]["analyst_focus"], "rule_keywords")
+        self.assertFalse(result["compound_intent"]["detected"])
+        self.assertEqual(result["compound_intent"]["classification"], "single")
 
     def test_llm_parse_failure_fails_closed_to_clarification(self):
         fake_llm = _FakeLLM(RuntimeError("network unavailable"))
@@ -103,6 +105,8 @@ class IntentParserTests(unittest.TestCase):
 
         self.assertEqual(result["intent"], 2)
         self.assertTrue(result["multi_intent"])
+        self.assertEqual(result["compound_intent"]["classification"], "sequential")
+        self.assertEqual(result["compound_intent"]["execution_policy"], "sequential_stages")
         self.assertEqual(tasks["investment_analysis"]["slots"]["stock_code"], "300750")
         self.assertEqual(tasks["investment_analysis"]["slots"]["analyst_focus"], "fundamental")
         self.assertEqual(tasks["backtest"]["depends_on"], ["analysis-1"])
@@ -113,6 +117,15 @@ class IntentParserTests(unittest.TestCase):
 
         self.assertEqual(tasks["investment_analysis"]["depends_on"], [])
         self.assertEqual(tasks["backtest"]["depends_on"], [])
+        self.assertEqual(result["compound_intent"]["classification"], "parallel")
+
+    def test_sequential_request_respects_the_user_action_order(self):
+        result = parser.parse_intent("先扫描全市场，再分析宁德时代的基本面")
+        tasks = {task["intent"]: task for task in result["sub_intents"]}
+
+        self.assertEqual(result["compound_intent"]["classification"], "sequential")
+        self.assertEqual(tasks["market_scan"]["depends_on"], [])
+        self.assertEqual(tasks["investment_analysis"]["depends_on"], ["market_scan-1"])
 
     def test_trade_action_is_a_confirmation_task_not_a_tool_request(self):
         result = parser.parse_intent("先分析宁德时代，价格合适就帮我下单")
@@ -121,6 +134,66 @@ class IntentParserTests(unittest.TestCase):
         self.assertEqual(result["intent"], 2)
         self.assertTrue(tasks["trade_action"]["requires_confirmation"])
         self.assertEqual(tasks["trade_action"]["depends_on"], ["analysis-1"])
+        self.assertEqual(result["compound_intent"]["classification"], "confirmation_gated")
+        self.assertEqual(result["compound_intent"]["execution_policy"], "confirmation_gate")
+
+    def test_unique_company_alias_is_resolved_without_fasttext(self):
+        result = parser.parse_intent("请分析茅台的技术面")
+
+        self.assertEqual(result["intent"], 2)
+        self.assertEqual(result["stock_code"], "600519")
+        self.assertEqual(result["analyst_focus"], "technical")
+        self.assertEqual(result["source"], "rule")
+
+    def test_multi_stock_analysis_fails_closed_instead_of_selecting_one_ticker(self):
+        result = parser.parse_intent("同时分析 600519 和 300750 的基本面")
+
+        self.assertEqual(result["intent"], 4)
+        self.assertIsNone(result["stock_code"])
+        self.assertIn("multiple_stock_references_require_clarification", result["slot_warnings"])
+        self.assertEqual(result["sub_intents"][0]["intent"], "clarify")
+
+    def test_backtest_window_is_extracted_and_missing_window_blocks_task(self):
+        complete = parser.parse_intent("回测 600519 近一年 MACD")
+        missing = parser.parse_intent("回测 600519 MACD")
+
+        self.assertEqual(complete["sub_intents"][0]["slots"]["backtest_window"], "近一年")
+        self.assertEqual(complete["sub_intents"][0]["missing_slots"], [])
+        self.assertIn("backtest_window", missing["sub_intents"][0]["missing_slots"])
+
+    def test_bare_buy_with_explicit_code_is_confirmation_gated(self):
+        result = parser.parse_intent("买入 600519")
+
+        self.assertEqual(result["intent"], 4)
+        task = result["sub_intents"][0]
+        self.assertEqual(task["intent"], "trade_action")
+        self.assertEqual(task["slots"]["stock_code"], "600519")
+        self.assertTrue(task["requires_confirmation"])
+
+    def test_complex_comparison_uses_validated_llm_decomposition_not_a_single_ticker(self):
+        fake_llm = _FakeLLM(
+            '{"tasks":[{"task_type":"comparison","stock_codes":["600519","300750"],'
+            '"focus":["fundamental","technical"],"depends_on":[]}]}'
+        )
+        with patch.object(parser.llm_cfg, "quick_llm", fake_llm):
+            result = parser.parse_intent("比较 600519 和 300750 的基本面和近期走势")
+
+        self.assertEqual(result["intent"], 2)
+        self.assertIsNone(result["stock_code"])
+        self.assertEqual(result["sub_intent_source"], "constrained_llm_decomposition")
+        self.assertEqual(result["sub_intents"][0]["intent"], "comparison")
+        self.assertEqual(result["sub_intents"][0]["slots"]["stock_codes"], ["600519", "300750"])
+
+    def test_invalid_complex_decomposition_keeps_multi_stock_clarification(self):
+        fake_llm = _FakeLLM(
+            '{"tasks":[{"task_type":"comparison","stock_codes":["600519","000001"],'
+            '"focus":["fundamental"],"depends_on":[]}]}'
+        )
+        with patch.object(parser.llm_cfg, "quick_llm", fake_llm):
+            result = parser.parse_intent("比较 600519 和 300750 的基本面")
+
+        self.assertEqual(result["intent"], 4)
+        self.assertEqual(result["sub_intents"][0]["intent"], "clarify")
 
 
 if __name__ == "__main__":

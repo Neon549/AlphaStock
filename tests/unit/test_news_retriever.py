@@ -4,7 +4,9 @@ from unittest.mock import patch
 from rag.retriever import (
     _is_official_announcement,
     _document_identity,
+    _filter_live_news_by_entity,
     _rrf_ranked,
+    _rerank_news_candidates,
     expand_finance_query,
     finance_query_facets,
     finance_title_matches,
@@ -13,6 +15,19 @@ from rag.retriever import (
 
 
 class NewsRetrieverTests(unittest.TestCase):
+    @patch("rag.retriever.get_stock_name", return_value="Example Corp")
+    def test_live_entity_gate_drops_unrelated_sector_headlines(self, _get_stock_name):
+        items = [
+            "Example Corp launches a new product",
+            "123456 stock buyback update",
+            "Sector fund-flow list led by another company",
+        ]
+
+        self.assertEqual(
+            _filter_live_news_by_entity("123456", items),
+            ["Example Corp launches a new product", "123456 stock buyback update"],
+        )
+
     def test_finance_query_expansion_keeps_original_and_adds_synonyms(self):
         expanded = expand_finance_query("600036 AI服务器需求")
 
@@ -64,10 +79,50 @@ class NewsRetrieverTests(unittest.TestCase):
         self.assertTrue(finance_title_matches("汇川技术成立轨道交通设备公司", facet))
 
 
+    def test_bge_cross_encoder_reranks_bounded_news_candidates(self):
+        primary = [("weak lexical match", 4.0), ("strong semantic answer", 3.0)]
+        with patch("rag.retriever._get_news_reranker", return_value=lambda _query, _passages: [0.1, 0.9]), patch(
+            "rag.retriever.NEWS_RERANK_BGE_WEIGHT", 1.0
+        ):
+            selected, applied = _rerank_news_candidates("question", primary, primary, top_k=2)
+
+        self.assertTrue(applied)
+        self.assertEqual(selected, [("strong semantic answer", 0.9), ("weak lexical match", 0.1)])
+
+    def test_bge_never_expands_the_lexical_evidence_set(self):
+        lexical = [("first lexical evidence", 4.0)]
+        primary = [*lexical, ("outside candidate", 3.0)]
+        with patch("rag.retriever._get_news_reranker", return_value=lambda _query, _passages: [0.1]), patch(
+            "rag.retriever.NEWS_RERANK_CANDIDATE_K", 1
+        ):
+            selected, applied = _rerank_news_candidates("question", primary, lexical, top_k=1)
+
+        self.assertTrue(applied)
+        self.assertEqual(selected, [("first lexical evidence", 0.1)])
+
+    def test_blended_bge_reranker_preserves_a_stronger_bm25_match(self):
+        primary = [("strong lexical match", 9.0), ("weak lexical semantic match", 1.0)]
+        with patch("rag.retriever._get_news_reranker", return_value=lambda _query, _passages: [0.1, 0.9]), patch(
+            "rag.retriever.NEWS_RERANK_BGE_WEIGHT", 0.5
+        ):
+            selected, applied = _rerank_news_candidates("question", primary, primary, top_k=2)
+
+        self.assertTrue(applied)
+        self.assertEqual(selected, [("strong lexical match", 0.1), ("weak lexical semantic match", 0.9)])
+
+    def test_bge_non_finite_score_falls_back_to_bm25(self):
+        primary = [("first lexical evidence", 4.0), ("second lexical evidence", 3.0)]
+        with patch("rag.retriever._get_news_reranker", return_value=lambda _query, _passages: [float("nan"), 0.9]):
+            selected, applied = _rerank_news_candidates("question", primary, primary, top_k=2)
+
+        self.assertFalse(applied)
+        self.assertEqual(selected, primary)
+
     @patch("rag.retriever.retrieve_news")
     @patch("rag.retriever.retrieve_news_corpus")
     @patch("rag.retriever.get_stock_news")
-    def test_hybrid_retrieval_fuses_live_and_pgvector_candidates(self, get_news, corpus, retrieve_news):
+    @patch("rag.retriever._get_news_reranker", return_value=None)
+    def test_hybrid_retrieval_fuses_live_and_pgvector_candidates(self, _reranker, get_news, corpus, retrieve_news):
         get_news.invoke.return_value = "茅台业绩增长\n行业政策支持"
         corpus.return_value = ["【贵州茅台 | 2026-08-01】茅台业绩增长"]
         retrieve_news.return_value = "【贵州茅台 | 2026-08-01】茅台业绩增长"
@@ -75,12 +130,18 @@ class NewsRetrieverTests(unittest.TestCase):
         result = hybrid_retrieve_news("600519", "利润", top_k=3)
 
         self.assertIn("茅台业绩增长", result)
-        retrieve_news.assert_called_once_with(query="利润", stock_code="600519", k=20, days=30)
+        kwargs = retrieve_news.call_args.kwargs
+        self.assertEqual(kwargs["stock_code"], "600519")
+        self.assertEqual(kwargs["k"], 20)
+        self.assertEqual(kwargs["days"], 30)
+        self.assertIn("利润", kwargs["query"])
+        self.assertIn("归母净利润", kwargs["query"])
 
     @patch("rag.retriever.retrieve_news")
     @patch("rag.retriever.retrieve_news_corpus")
     @patch("rag.retriever.get_stock_news")
-    def test_scoped_bm25_skips_embedding_when_top_k_is_satisfied(self, get_news, corpus, retrieve_news):
+    @patch("rag.retriever._get_news_reranker", return_value=None)
+    def test_scoped_bm25_skips_embedding_when_top_k_is_satisfied(self, _reranker, get_news, corpus, retrieve_news):
         get_news.invoke.return_value = ""
         corpus.return_value = ["【工业富联 | 2026-08-12】AI服务器需求增长"]
 
@@ -103,7 +164,8 @@ class NewsRetrieverTests(unittest.TestCase):
     @patch("rag.retriever.retrieve_news")
     @patch("rag.retriever.retrieve_news_corpus")
     @patch("rag.retriever.get_stock_news")
-    def test_hybrid_retrieval_records_hashes_and_rrf_scores_only(self, get_news, corpus, retrieve_news, record):
+    @patch("rag.retriever._get_news_reranker", return_value=lambda _query, passages: [float(len(passages) - index) for index in range(len(passages))])
+    def test_hybrid_retrieval_records_hashes_and_rrf_scores_only(self, _reranker, get_news, corpus, retrieve_news, record):
         get_news.invoke.return_value = "私有新闻标题"
         corpus.return_value = ["【贵州茅台 | 2026-08-01】业绩增长"]
         retrieve_news.return_value = "【贵州茅台 | 2026-08-01】业绩增长"
@@ -113,6 +175,7 @@ class NewsRetrieverTests(unittest.TestCase):
         retrieval_event = record.call_args_list[0].args[1]
         self.assertEqual(retrieval_event["query"]["query_preview"], "业绩 联系电话 [phone]")
         self.assertTrue(retrieval_event["rerank"]["applied"])
+        self.assertEqual(retrieval_event["rerank"]["method"], "bge_cross_encoder_news")
         self.assertIn("news_sha256", retrieval_event["top_k"][0])
         self.assertNotIn("私有新闻标题", str(retrieval_event))
         self.assertEqual(record.call_args_list[1].args[1]["status"], "not_applicable")

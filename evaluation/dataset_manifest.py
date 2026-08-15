@@ -83,9 +83,10 @@ def verify_manifest(path: Path = DEFAULT_MANIFEST) -> dict[str, Any]:
                 if not raw.get(field):
                     errors.append(f"{dataset_id}: production datasets require {field}")
         if tier == "candidate":
-            for field in ("corpus_snapshot", "review_status"):
-                if not raw.get(field):
-                    errors.append(f"{dataset_id}: candidate datasets require {field}")
+            if not raw.get("review_status"):
+                errors.append(f"{dataset_id}: candidate datasets require review_status")
+            if not raw.get("corpus_snapshot") and not raw.get("routing_snapshot"):
+                errors.append(f"{dataset_id}: candidate datasets require corpus_snapshot or routing_snapshot")
 
         entries.append(
             {

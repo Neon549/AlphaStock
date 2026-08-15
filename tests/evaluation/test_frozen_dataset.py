@@ -34,3 +34,30 @@ def test_intent_validator_rejects_unconfirmed_trade_action() -> None:
 
     assert report["valid"] is False
     assert "requires explicit confirmation" in " ".join(report["errors"])
+
+
+def test_intent_validator_rejects_an_invalid_compound_contract() -> None:
+    report = validate_intent_rows([
+        {
+            "id": "intent-compound-1",
+            "query": "Analyze then backtest 600519",
+            "expected": {
+                "intent": 2,
+                "analyst_focus": "all",
+                "compound": {
+                    "detected": True,
+                    "classification": "unknown",
+                    "execution_policy": "single_task",
+                    "task_intents": ["investment_analysis", "backtest"],
+                },
+                "tasks": [
+                    {"intent": "investment_analysis"},
+                    {"intent": "backtest", "depends_on_intents": ["investment_analysis"]},
+                ],
+            },
+            "provenance": {"origin": "manual", "reviewer": "reviewer-a", "reviewed_at": "2026-08-13"},
+        }
+    ])
+
+    assert report["valid"] is False
+    assert "invalid expected.compound contract" in " ".join(report["errors"])
