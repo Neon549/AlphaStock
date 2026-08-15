@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import os
+import secrets
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
@@ -21,6 +22,28 @@ REDIRECT_URI = os.getenv(
     "GOOGLE_REDIRECT_URI", "https://alphastock.cloud/api/v1/auth/google/callback"
 )
 FRONTEND_URL = os.getenv("FRONTEND_URL", "https://alphastock.cloud").rstrip("/")
+OAUTH_STATE_COOKIE = "alphastock_google_oauth_state"
+OAUTH_NEXT_PAGE_COOKIE = "alphastock_google_oauth_next_page"
+OAUTH_COOKIE_MAX_AGE_SECONDS = 600
+ALLOWED_NEXT_PAGES = {"chat", "backtest", "alpha", "scan", "filter"}
+
+
+def _safe_next_page(value: str | None) -> str:
+    """Keep post-login navigation on a known first-party Streamlit page."""
+
+    return value if value in ALLOWED_NEXT_PAGES else "chat"
+
+
+def _clear_oauth_cookies(response: RedirectResponse) -> RedirectResponse:
+    response.delete_cookie(OAUTH_STATE_COOKIE, path="/api/v1/auth/google/callback")
+    response.delete_cookie(OAUTH_NEXT_PAGE_COOKIE, path="/api/v1/auth/google/callback")
+    return response
+
+
+def _frontend_error(error: str) -> RedirectResponse:
+    return _clear_oauth_cookies(
+        RedirectResponse(f"{FRONTEND_URL}?" + urlencode({"login_error": error}))
+    )
 
 
 def _upsert_google_user(email: str, name: str, google_id: str) -> str:
@@ -49,25 +72,46 @@ def _upsert_google_user(email: str, name: str, google_id: str) -> str:
 
 
 @router.get("/auth/google")
-def google_login():
+def google_login(next_page: str | None = None):
     if not CLIENT_ID:
         raise HTTPException(503, detail="Google login is not configured")
+    state = secrets.token_urlsafe(32)
     params = {
         "client_id": CLIENT_ID,
         "redirect_uri": REDIRECT_URI,
         "response_type": "code",
         "scope": "openid email profile",
         "access_type": "offline",
+        "state": state,
     }
-    return RedirectResponse("https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params))
+    response = RedirectResponse("https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params))
+    cookie_options = {
+        "max_age": OAUTH_COOKIE_MAX_AGE_SECONDS,
+        "httponly": True,
+        "secure": True,
+        "samesite": "lax",
+        "path": "/api/v1/auth/google/callback",
+    }
+    response.set_cookie(OAUTH_STATE_COOKIE, state, **cookie_options)
+    response.set_cookie(OAUTH_NEXT_PAGE_COOKIE, _safe_next_page(next_page), **cookie_options)
+    return response
 
 
 @router.get("/auth/google/callback")
-async def google_callback(code: str | None = None, error: str | None = None):
+async def google_callback(
+    request: Request,
+    code: str | None = None,
+    error: str | None = None,
+    state: str | None = None,
+):
+    expected_state = request.cookies.get(OAUTH_STATE_COOKIE, "")
+    next_page = _safe_next_page(request.cookies.get(OAUTH_NEXT_PAGE_COOKIE))
+    if not state or not expected_state or not secrets.compare_digest(state, expected_state):
+        return _frontend_error("invalid_oauth_state")
     if error:
-        return RedirectResponse(f"{FRONTEND_URL}?login_error={error}")
+        return _frontend_error(error)
     if not code or not CLIENT_ID or not CLIENT_SECRET:
-        return RedirectResponse(f"{FRONTEND_URL}?login_error=google_not_configured")
+        return _frontend_error("google_not_configured")
 
     async with httpx.AsyncClient(timeout=8.0) as client:
         token_resp = await client.post(
@@ -83,23 +127,27 @@ async def google_callback(code: str | None = None, error: str | None = None):
         token_data = token_resp.json()
         access_token = token_data.get("access_token")
         if not access_token:
-            return RedirectResponse(f"{FRONTEND_URL}?login_error=token_failed")
+            return _frontend_error("token_failed")
         user_resp = await client.get(
             "https://www.googleapis.com/oauth2/v2/userinfo",
             headers={"Authorization": f"Bearer {access_token}"},
         )
     if user_resp.status_code != 200:
-        return RedirectResponse(f"{FRONTEND_URL}?login_error=userinfo_failed")
+        return _frontend_error("userinfo_failed")
     user_info = user_resp.json()
     email = str(user_info.get("email") or "").strip().lower()
     name = str(user_info.get("name") or email.split("@")[0]).strip()
     google_id = str(user_info.get("id") or "").strip()
     if not email or not google_id:
-        return RedirectResponse(f"{FRONTEND_URL}?login_error=invalid_profile")
+        return _frontend_error("invalid_profile")
 
     token = _upsert_google_user(email, name, google_id)
-    return RedirectResponse(
-        f"{FRONTEND_URL}?" + urlencode({"google_login": "success", "token": token, "username": email})
+    return _clear_oauth_cookies(
+        RedirectResponse(
+            f"{FRONTEND_URL}?" + urlencode(
+                {"google_login": "success", "token": token, "username": email, "page": next_page}
+            )
+        )
     )
 
 
