@@ -27,7 +27,31 @@ jobs:
           DASHSCOPE_API_KEY: ci-test-placeholder
           ALPHASTOCK_SKIP_DOTENV: "1"
           ALPHASTOCK_OFFLINE_TESTS: "1"
-        run: python -m pytest -q tests
+        run: |
+          set +e
+          python -m pytest -q tests --junitxml=pytest-results.xml
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            python - <<'PY'
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse("pytest-results.xml").getroot()
+          emitted = 0
+          for case in root.iter("testcase"):
+              failure = case.find("failure") or case.find("error")
+              if failure is None:
+                  continue
+              classname = case.attrib.get("classname", "tests")
+              name = case.attrib.get("name", "unknown")
+              detail = (failure.text or failure.attrib.get("message", "")).strip()
+              detail = " ".join(detail.split())[:1000]
+              print(f"::error title=pytest failure::{classname}.{name}: {detail}")
+              emitted += 1
+              if emitted >= 10:
+                  break
+          PY
+          fi
+          exit "$status"
 
   deploy:
     needs: regression
