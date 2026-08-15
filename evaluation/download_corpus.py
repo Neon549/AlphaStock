@@ -55,9 +55,9 @@ def _display_path(path: Path) -> str:
     """Prefer repository-relative paths, without rejecting external targets."""
 
     try:
-        return str(path.resolve().relative_to(ROOT.resolve()))
+        return path.resolve().relative_to(ROOT.resolve()).as_posix()
     except ValueError:
-        return str(path.resolve())
+        return path.resolve().as_posix()
 
 
 def _download(document: dict[str, Any], target_dir: Path, *, timeout_seconds: float) -> dict[str, Any]:

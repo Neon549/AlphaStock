@@ -32,4 +32,4 @@ def test_download_accepts_a_relative_custom_target_directory(tmp_path: Path, mon
     with patch("evaluation.download_corpus.requests.get", return_value=fake_response):
         record = _download({"document_id": "doc", "source_url": "https://example.test/doc.pdf"}, target, timeout_seconds=1)
 
-    assert record["local_path"].endswith("runtime\\download-corpus-test\\doc.pdf")
+    assert record["local_path"].endswith("runtime/download-corpus-test/doc.pdf")
