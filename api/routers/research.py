@@ -116,6 +116,107 @@ def health_check():
     return {"status": "ok", "message": "Trading Agent System is running"}
 
 
+def _diagnostic_detail(detail: object) -> dict:
+    """Expose only bounded execution metadata, never prompts or raw tool text."""
+
+    if not isinstance(detail, dict):
+        return {}
+    allowed = {
+        "tool", "skill", "subagent", "source_kind", "ok", "status", "reason",
+        "result_ref", "latency_ms", "attempts", "retry_trace", "tool_failure",
+        "model_failure", "stage", "template", "instance_id", "task_status",
+    }
+    return {key: detail[key] for key in allowed if key in detail}
+
+
+@router.get("/runs/{run_id}")
+def get_run_diagnostics(
+    run_id: str,
+    x_auth_token: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+):
+    """Return the caller's safe execution diagnostics for one governed run."""
+
+    actor_id = require_actor(body_token=None, x_auth_token=x_auth_token, authorization=authorization)
+    from db import get_conn
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT ar.run_id, ar.route, ar.status, ar.session_id,
+                       ar.result_meta, ar.started_at, ar.completed_at,
+                       ae.trigger, ae.channel
+                FROM agent_runs ar
+                JOIN agent_events ae ON ae.event_id = ar.event_id
+                WHERE ar.run_id = %s AND ae.actor_id = %s
+                """,
+                (run_id, actor_id),
+            )
+            run = cur.fetchone()
+            if not run:
+                raise HTTPException(status_code=404, detail="run not found")
+
+            cur.execute(
+                """
+                SELECT step_index, event_type, detail, created_at
+                FROM agent_steps
+                WHERE run_id = %s
+                ORDER BY step_index
+                """,
+                (run_id,),
+            )
+            steps = [
+                {
+                    "step_index": row[0], "event_type": row[1],
+                    "detail": _diagnostic_detail(row[2]),
+                    "created_at": row[3].isoformat() if row[3] else None,
+                }
+                for row in cur.fetchall()
+            ]
+
+            cur.execute(
+                """
+                SELECT atr.result_ref, atr.tool, atr.source_kind, atr.citations,
+                       atr.content_sha256, atr.created_at,
+                       me.evidence_type, me.quality_status, me.retrieved_at,
+                       me.period_end
+                FROM agent_run_tool_results art
+                JOIN agent_tool_results atr ON atr.result_ref = art.result_ref
+                LEFT JOIN market_evidence me ON me.result_ref = atr.result_ref
+                WHERE art.run_id = %s
+                ORDER BY atr.created_at
+                """,
+                (run_id,),
+            )
+            tools = [
+                {
+                    "result_ref": row[0], "tool": row[1], "source_kind": row[2],
+                    "citations": row[3] or [], "content_sha256": row[4],
+                    "created_at": row[5].isoformat() if row[5] else None,
+                    "market_evidence": {
+                        "evidence_type": row[6], "quality_status": row[7],
+                        "retrieved_at": row[8].isoformat() if row[8] else None,
+                        "period_end": row[9].isoformat() if row[9] else None,
+                    } if row[6] else None,
+                }
+                for row in cur.fetchall()
+            ]
+
+    result_meta = run[4] or {}
+    run_metrics = result_meta.get("run_metrics", {}) if isinstance(result_meta, dict) else {}
+    return {
+        "run_id": run[0], "route": run[1], "status": run[2],
+        "session_id": run[3], "trigger": run[7], "channel": run[8],
+        "started_at": run[5].isoformat() if run[5] else None,
+        "completed_at": run[6].isoformat() if run[6] else None,
+        "result_meta": result_meta,
+        "evidence_status": run_metrics.get("evidence_status", {}),
+        "steps": steps,
+        "tools": tools,
+    }
+
+
 @router.post("/webhooks/agent")
 def agent_webhook(request: WebhookRequest, x_webhook_signature: str = Header(...)):
     from control_plane.triggers import webhook_event

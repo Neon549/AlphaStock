@@ -181,10 +181,10 @@ class InvestmentRuntime:
         ) as telemetry:
             result = self._run(event, run_id)
         agent_trace = result.payload.get("workflow_result", {}).get("agent_trace", [])
-        metrics = telemetry.summary(agent_trace)
+        workflow_result = result.payload.get("workflow_result")
+        metrics = telemetry.summary(agent_trace, workflow_result)
         result.payload["run_metrics"] = metrics
         result.payload["trace_summary"] = telemetry.public_summary(metrics)
-        workflow_result = result.payload.get("workflow_result")
         if metrics.get("llm_draft_only_call_count") and isinstance(workflow_result, dict):
             reason = "a reduced-capability backup model was used; draft requires human review"
             workflow_result["model_degradation"] = {

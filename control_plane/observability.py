@@ -28,7 +28,11 @@ class RunTelemetry:
     rag_events: list[dict[str, Any]] = field(default_factory=list)
     lock: Lock = field(default_factory=Lock, repr=False)
 
-    def summary(self, agent_trace: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    def summary(
+        self,
+        agent_trace: list[dict[str, Any]] | None = None,
+        workflow_result: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         usage_fields = (
             "input_tokens", "output_tokens", "total_tokens",
             "prompt_cache_hit_tokens", "prompt_cache_miss_tokens",
@@ -69,6 +73,15 @@ class RunTelemetry:
             else "ok" if self.llm_calls
             else "not_used"
         )
+        from control_plane.evidence_status import build_evidence_status
+
+        evidence_status = build_evidence_status(
+            rag_events=self.rag_events,
+            observations=(workflow_result or {}).get("research_evidence") or [],
+            validations=validations,
+            publish_status=(workflow_result or {}).get("publish_status"),
+            publish_reasons=(workflow_result or {}).get("publish_reasons") or [],
+        )
         return {
             "run_id": self.run_id,
             "elapsed_ms": round(self.elapsed_ms, 1),
@@ -91,6 +104,7 @@ class RunTelemetry:
             "citation_count": sum(int(event.get("citation_count") or 0) for event in validations),
             "model_status": model_status,
             "models": models,
+            "evidence_status": evidence_status,
             **totals,
         }
 
@@ -113,6 +127,7 @@ class RunTelemetry:
             "citation_validation_status": validation_status,
             "abstained": bool(metrics["abstained_retrieval_count"]),
             "model_status": metrics["model_status"],
+            "evidence_status": metrics.get("evidence_status", {}),
         }
 
     def export(self) -> dict[str, Any]:
