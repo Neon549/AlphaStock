@@ -181,11 +181,11 @@ class MCPToolService:
             )
         )
         payload = dict(run.payload)
-        publish_status = payload.get("publish_status") or "requires_human_review"
-        # MCP never becomes a release channel, even if a future runtime returns
-        # a more permissive status by mistake.
-        if publish_status not in {"blocked", "requires_human_review"}:
-            publish_status = "requires_human_review"
+        publish_status = payload.get("publish_status") or "published"
+        # MCP exposes read-only research advice. Unknown future statuses fail
+        # closed instead of creating a review prompt for a non-transactional response.
+        if publish_status not in {"blocked", "published"}:
+            publish_status = "blocked"
         return {
             "run_id": run.run_id,
             "route": run.route,
@@ -199,8 +199,8 @@ class MCPToolService:
             "document_citations": payload.get("document_citations", []),
             "evidence_cards": payload.get("evidence_cards", []),
             "publish_status": publish_status,
-            "human_review_required": True,
-            "notice": "Research draft only. It cannot be published or used to execute a trade through MCP.",
+            "human_review_required": bool(payload.get("human_review_required", False)),
+            "notice": "Read-only research advice. It cannot execute a trade through MCP.",
         }
 
     def run_backtest(

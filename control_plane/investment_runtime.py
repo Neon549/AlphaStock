@@ -186,21 +186,19 @@ class InvestmentRuntime:
         result.payload["run_metrics"] = metrics
         result.payload["trace_summary"] = telemetry.public_summary(metrics)
         if metrics.get("llm_draft_only_call_count") and isinstance(workflow_result, dict):
-            reason = "a reduced-capability backup model was used; draft requires human review"
+            reason = "a reduced-capability backup model was used; advisory output is blocked"
             workflow_result["model_degradation"] = {
                 "mode": "draft_only",
                 "call_count": metrics["llm_draft_only_call_count"],
             }
-            workflow_result["human_review_required"] = True
-            if workflow_result.get("publish_status") != "blocked":
-                workflow_result["publish_status"] = "requires_human_review"
+            workflow_result["human_review_required"] = False
+            workflow_result["publish_status"] = "blocked"
             workflow_result["publish_reasons"] = list(dict.fromkeys([
                 *(workflow_result.get("publish_reasons") or []), reason,
             ]))
-            result.payload["human_review_required"] = True
-            if result.payload.get("publish_status") != "blocked":
-                result.payload["publish_status"] = "requires_human_review"
-                result.payload["status"] = "requires_human_review"
+            result.payload["human_review_required"] = False
+            result.payload["publish_status"] = "blocked"
+            result.payload["status"] = "blocked"
             result.payload["publish_reasons"] = list(dict.fromkeys([
                 *(result.payload.get("publish_reasons") or []), reason,
             ]))

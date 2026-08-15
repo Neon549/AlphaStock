@@ -108,14 +108,17 @@ def evaluate_output_gate(state: dict[str, Any]) -> dict[str, Any]:
             "evidence_gate": {"passed": False, "valid_evidence_count": 0},
         }
 
-    # Investment recommendations are always high-impact external advice. They
-    # remain a draft until a named reviewer explicitly approves publication.
+    # This product currently returns read-only research advice. It does not
+    # place orders, change a portfolio, or invoke a broker. The deterministic
+    # output gate is therefore the release boundary for advisory output;
+    # publication review is reserved for a future high-impact execution path.
     return {
-        "publish_status": "requires_human_review",
+        "publish_status": "published",
         "publish_reasons": [
-            "investment recommendation requires human approval before publication"
+            "output gate passed; read-only advisory output"
         ],
-        "human_review_required": True,
+        "human_review_required": False,
+        "output_class": "advisory",
         "draft_decision": draft,
         "final_decision": draft,
         "evidence_gate": {

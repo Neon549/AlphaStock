@@ -51,7 +51,7 @@ class _Verifier:
 
 
 class MCPRemoteTests(unittest.TestCase):
-    def test_research_uses_mcp_event_and_never_publishes(self):
+    def test_research_uses_mcp_event_and_returns_read_only_advice(self):
         gateway = _Gateway()
         service = MCPToolService(gateway_factory=lambda: gateway)
         principal = MCPPrincipal("alice", READ_ONLY_SCOPES)
@@ -65,9 +65,9 @@ class MCPRemoteTests(unittest.TestCase):
 
         self.assertEqual(gateway.event.trigger, TriggerType.MCP)
         self.assertEqual(gateway.event.channel, "mcp")
-        self.assertEqual(result["publish_status"], "requires_human_review")
-        self.assertTrue(result["human_review_required"])
-        self.assertIn("cannot be published", result["notice"])
+        self.assertEqual(result["publish_status"], "published")
+        self.assertFalse(result["human_review_required"])
+        self.assertIn("Read-only research advice", result["notice"])
 
     def test_service_token_cannot_read_session_document(self):
         service = MCPToolService()

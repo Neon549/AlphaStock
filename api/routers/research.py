@@ -46,7 +46,7 @@ class AnalyzeResponse(BaseModel):
     sentiment_report: str
     researcher_analysis: str
     status: str = "success"
-    publish_status: str = "requires_human_review"
+    publish_status: str = "published"
     review_id: Optional[str] = None
     publish_reasons: list[str] = []
     document_citations: list[dict] = []

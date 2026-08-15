@@ -283,7 +283,7 @@ class InvestmentAgentLoopTests(unittest.TestCase):
                 {"stock_code": "600519", "analysis_query": "technical analysis", "analyst_focus": "technical"},
                 planner_llm=planner, final_llm=final, skill_executor=execute,
             )
-        self.assertEqual(result["publish_status"], "requires_human_review")
+        self.assertEqual(result["publish_status"], "published")
         self.assertTrue(result["evidence_gate"]["passed"])
 
     def test_parent_harness_persists_typed_skill_failure_for_the_next_planner_turn(self):

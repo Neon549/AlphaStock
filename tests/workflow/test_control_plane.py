@@ -143,7 +143,7 @@ class ControlPlaneTests(unittest.TestCase):
         result = runtime.run(AgentEvent(TriggerType.MESSAGE, "分析茅台"))
 
         self.assertEqual(result.payload["model_degradation"]["mode"], "draft_only")
-        self.assertTrue(result.payload["human_review_required"])
+        self.assertFalse(result.payload["human_review_required"])
         self.assertIn("reduced-capability backup", result.payload["publish_reasons"][-1])
 
     def test_runtime_can_retain_the_fixed_workflow_as_an_explicit_fallback(self):

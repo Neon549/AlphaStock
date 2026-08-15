@@ -23,14 +23,15 @@ class EvidenceGateTests(unittest.TestCase):
         self.assertEqual(result["publish_status"], "blocked")
         self.assertFalse(result["evidence_gate"]["passed"])
 
-    def test_accepts_timestamped_market_evidence_but_keeps_human_review(self):
+    def test_accepts_timestamped_market_evidence_as_read_only_advice(self):
         result = evaluate_output_gate(_state([{
             "ok": True,
             "source_kind": "market_evidence",
             "result_ref": "tool-result:market-price:fixture",
             "freshness": {"status": "retrieved"},
         }]))
-        self.assertEqual(result["publish_status"], "requires_human_review")
+        self.assertEqual(result["publish_status"], "published")
+        self.assertFalse(result["human_review_required"])
         self.assertTrue(result["evidence_gate"]["passed"])
 
     def test_degraded_cache_is_never_current_market_evidence(self):
@@ -48,7 +49,7 @@ class EvidenceGateTests(unittest.TestCase):
             "source_kind": "document_evidence",
             "citations": [{"evidence_id": "doc:page-8", "page": 8}],
         }]))
-        self.assertEqual(result["publish_status"], "requires_human_review")
+        self.assertEqual(result["publish_status"], "published")
 
 
 if __name__ == "__main__":

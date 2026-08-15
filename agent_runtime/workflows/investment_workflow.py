@@ -1,9 +1,9 @@
 """Bounded local investment-research workflow.
 
 The analysis branch and the backtest branch are independent and may run in
-parallel.  Their outputs are then synthesized into a *draft* only: the same
-publication gate used by the API still requires a human reviewer before any
-investment recommendation can be published.
+parallel. Their outputs are synthesized into a read-only advisory result. The
+deterministic output gate decides whether it can be returned; this workflow
+never executes a trade.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ def run_local_investment_workflow(
     analyst_focus: str = "all",
     doc_context: str = "",
 ) -> dict[str, Any]:
-    """Run analysis and backtest in parallel, then produce a reviewable draft.
+    """Run analysis and backtest in parallel, then produce an advisory result.
 
     This is deliberately an orchestrated workflow, not an unbounded tool loop:
     both branches run once, and the final synthesis gets a bounded context.
@@ -97,7 +97,7 @@ def run_local_investment_workflow(
 2. 技术、基本面、情绪、回测各一条关键证据；
 3. 一致或冲突说明；
 4. 风险与下一步核验项。
-这是待人工审核的研究草案，不是自动交易指令。"""
+这是只读投研建议，不是自动交易指令。"""
     draft = deep_llm.invoke([HumanMessage(content=prompt)]).content
 
     gate_state = {

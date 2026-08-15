@@ -45,7 +45,7 @@
       "path": "evaluation/datasets/workflow_regression.jsonl",
       "tier": "contract",
       "case_count": 8,
-      "sha256": "6a34eab9b529bcaf774b49130741b6174e3e1b1b74755b1212e7fa6e20e68056",
+      "sha256": "981453daa3c15f85a50f6d422643b846c07708fc51b0a34d7465a82930e032cc",
       "purpose": "Scope validation and publication-gate safety regression fixture.",
       "claim_limit": "Do not report as real-world safety coverage."
     },

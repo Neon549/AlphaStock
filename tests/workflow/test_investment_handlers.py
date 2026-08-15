@@ -29,7 +29,7 @@ class TraderAndOutputGateHandlerTests(unittest.TestCase):
         self.assertIn("previous approved decision", prompt)
         self.assertIn("user_style", prompt)
 
-    def test_output_gate_stays_deterministic_and_requires_review(self):
+    def test_output_gate_stays_deterministic_for_read_only_advice(self):
         result = investment_handlers.output_gate_node(
             {
                 "fundamental_report": "[ANALYSIS_OK] cash flow improved",
@@ -39,5 +39,5 @@ class TraderAndOutputGateHandlerTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(result["publish_status"], "requires_human_review")
-        self.assertTrue(result["human_review_required"])
+        self.assertEqual(result["publish_status"], "published")
+        self.assertFalse(result["human_review_required"])
