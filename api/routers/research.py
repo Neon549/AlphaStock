@@ -185,6 +185,10 @@ def chat(
         "run_id": run.run_id,
         "answer": payload.get("content") or payload.get("decision", ""),
         "citations": payload.get("document_citations", []),
+        "publish_status": payload.get("publish_status", "success"),
+        "publish_reasons": payload.get("publish_reasons", []),
+        "human_review_required": payload.get("human_review_required", False),
+        "evidence_cards": payload.get("evidence_cards", []),
         "trace_summary": payload.get("trace_summary", {}),
     }
 
