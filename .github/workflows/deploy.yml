@@ -38,7 +38,9 @@ jobs:
           root = ET.parse("pytest-results.xml").getroot()
           emitted = 0
           for case in root.iter("testcase"):
-              failure = case.find("failure") or case.find("error")
+              failure = case.find("failure")
+              if failure is None:
+                  failure = case.find("error")
               if failure is None:
                   continue
               classname = case.attrib.get("classname", "tests")
