@@ -29,7 +29,11 @@ VALID_TIERS = {"contract", "smoke", "candidate", "external_gold", "production"}
 
 
 def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    # Text datasets are checked out with platform-specific line endings on
+    # some developer machines. Canonicalize CRLF to LF so the committed
+    # manifest verifies identically on Windows and Linux CI.
+    normalized = path.read_text(encoding="utf-8").replace("\r\n", "\n").encode("utf-8")
+    return hashlib.sha256(normalized).hexdigest()
 
 
 def _jsonl_count(path: Path) -> int:
