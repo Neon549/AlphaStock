@@ -6,6 +6,7 @@ from control_plane.observability import (
     record_llm_call,
     register_tool_artifact,
     record_rag_event,
+    record_external_call,
     redact_query,
     run_telemetry_scope,
 )
@@ -33,6 +34,7 @@ class RunObservabilityTests(unittest.TestCase):
                 "tool": "market-price", "source_kind": "market_evidence",
                 "citations": [], "content": "fixture", "content_sha256": "abc",
             })
+            record_external_call(target="market-price", ok=True, latency_ms=3.0)
         summary = telemetry.summary([{"event": "skill_result", "latency_ms": 8.0}])
         self.assertEqual(summary["run_id"], "run-fixture")
         self.assertEqual(summary["input_tokens"], 100)
@@ -40,6 +42,7 @@ class RunObservabilityTests(unittest.TestCase):
         self.assertEqual(summary["llm_backup_call_count"], 1)
         self.assertEqual(summary["llm_draft_only_call_count"], 1)
         self.assertEqual(summary["tool_call_count"], 1)
+        self.assertEqual(summary["execution_status"]["external_http"]["status"], "success")
         self.assertEqual(telemetry.export()["tool_artifacts"]["tool-result:price:abc"]["content"], "fixture")
         self.assertIsNone(current_run_id())
 

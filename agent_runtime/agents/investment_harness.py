@@ -229,7 +229,28 @@ def _run_market_evidence_skill(state: dict[str, Any], tool_name: str) -> dict[st
     arguments = {"symbol": state["stock_code"]}
     if tool_name == "market-history":
         arguments["days"] = 30
-    content = str(tool.invoke(arguments))
+    import time
+
+    started = time.monotonic()
+    try:
+        content = str(tool.invoke(arguments))
+    except Exception as exc:
+        from control_plane.observability import record_external_call
+
+        record_external_call(
+            target=tool_name, ok=False,
+            latency_ms=(time.monotonic() - started) * 1000,
+            error_type=type(exc).__name__,
+        )
+        raise
+    from control_plane.observability import record_external_call
+
+    record_external_call(
+        target=tool_name,
+        ok=not content.startswith("[TOOL_ERROR]"),
+        latency_ms=(time.monotonic() - started) * 1000,
+        error_type="tool_error" if content.startswith("[TOOL_ERROR]") else None,
+    )
     metadata = _market_metadata(content, tool_name)
     return {
         "ok": not content.startswith("[TOOL_ERROR]"),

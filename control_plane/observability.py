@@ -23,9 +23,15 @@ class RunTelemetry:
     run_id: str
     started_at: float = field(default_factory=perf_counter)
     elapsed_ms: float = 0.0
+    input_received: bool = False
+    input_length: int = 0
+    input_sha256: str | None = None
+    run_metadata: dict[str, Any] = field(default_factory=dict)
     llm_calls: list[dict[str, Any]] = field(default_factory=list)
     tool_artifacts: dict[str, dict[str, Any]] = field(default_factory=dict)
     rag_events: list[dict[str, Any]] = field(default_factory=list)
+    external_calls: list[dict[str, Any]] = field(default_factory=list)
+    mcp_calls: list[dict[str, Any]] = field(default_factory=list)
     lock: Lock = field(default_factory=Lock, repr=False)
 
     def summary(
@@ -74,6 +80,7 @@ class RunTelemetry:
             else "not_used"
         )
         from control_plane.evidence_status import build_evidence_status
+        from control_plane.execution_status import build_execution_status
 
         evidence_status = build_evidence_status(
             rag_events=self.rag_events,
@@ -81,6 +88,14 @@ class RunTelemetry:
             validations=validations,
             publish_status=(workflow_result or {}).get("publish_status"),
             publish_reasons=(workflow_result or {}).get("publish_reasons") or [],
+        )
+        execution_status = build_execution_status(
+            input_received=self.input_received,
+            input_length=self.input_length,
+            input_sha256=self.input_sha256,
+            run_metadata=self.run_metadata,
+            external_calls=self.external_calls,
+            mcp_calls=self.mcp_calls,
         )
         return {
             "run_id": self.run_id,
@@ -105,6 +120,7 @@ class RunTelemetry:
             "model_status": model_status,
             "models": models,
             "evidence_status": evidence_status,
+            "execution_status": execution_status,
             **totals,
         }
 
@@ -128,6 +144,7 @@ class RunTelemetry:
             "abstained": bool(metrics["abstained_retrieval_count"]),
             "model_status": metrics["model_status"],
             "evidence_status": metrics.get("evidence_status", {}),
+            "execution_status": metrics.get("execution_status", {}),
         }
 
     def export(self) -> dict[str, Any]:
@@ -136,6 +153,8 @@ class RunTelemetry:
             "llm_calls": [dict(call) for call in self.llm_calls],
             "tool_artifacts": {key: dict(value) for key, value in self.tool_artifacts.items()},
             "rag_events": [dict(event) for event in self.rag_events],
+            "external_calls": [dict(event) for event in self.external_calls],
+            "mcp_calls": [dict(event) for event in self.mcp_calls],
         }
 
 
@@ -149,7 +168,14 @@ def run_telemetry_scope(
     query: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> Iterator[RunTelemetry]:
-    telemetry = RunTelemetry(run_id=run_id)
+    raw_query = str(query or "")
+    telemetry = RunTelemetry(
+        run_id=run_id,
+        input_received=bool(raw_query.strip()),
+        input_length=len(raw_query),
+        input_sha256=hashlib.sha256(raw_query.encode("utf-8")).hexdigest() if raw_query else None,
+        run_metadata=dict(metadata or {}),
+    )
     token = _ACTIVE_RUN.set(telemetry)
     _start_langfuse_run(run_id, query=query or "", metadata=metadata or {})
     try:
@@ -194,6 +220,44 @@ def register_tool_artifact(result_ref: str, artifact: dict[str, Any]) -> None:
     if telemetry is not None:
         with telemetry.lock:
             telemetry.tool_artifacts[result_ref] = artifact
+
+
+def record_external_call(
+    *,
+    target: str,
+    ok: bool,
+    latency_ms: float,
+    protocol: str = "https",
+    error_type: str | None = None,
+) -> None:
+    """Record a bounded external provider call without URL/query contents."""
+
+    telemetry = _ACTIVE_RUN.get()
+    if telemetry is None:
+        return
+    with telemetry.lock:
+        telemetry.external_calls.append({
+            "target": str(target),
+            "protocol": str(protocol),
+            "ok": bool(ok),
+            "latency_ms": round(float(latency_ms), 1),
+            "error_type": str(error_type) if error_type else None,
+        })
+
+
+def record_mcp_call(*, target: str, ok: bool, latency_ms: float = 0.0, error_type: str | None = None) -> None:
+    """Record an explicit MCP tool call when one occurs inside a run."""
+
+    telemetry = _ACTIVE_RUN.get()
+    if telemetry is None:
+        return
+    with telemetry.lock:
+        telemetry.mcp_calls.append({
+            "target": str(target),
+            "ok": bool(ok),
+            "latency_ms": round(float(latency_ms), 1),
+            "error_type": str(error_type) if error_type else None,
+        })
 
 
 _EMAIL = re.compile(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b")

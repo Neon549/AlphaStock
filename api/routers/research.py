@@ -212,6 +212,7 @@ def get_run_diagnostics(
         "completed_at": run[6].isoformat() if run[6] else None,
         "result_meta": result_meta,
         "evidence_status": run_metrics.get("evidence_status", {}),
+        "execution_status": run_metrics.get("execution_status", {}),
         "steps": steps,
         "tools": tools,
     }

@@ -1,4 +1,5 @@
 from control_plane.evidence_status import build_evidence_status
+from control_plane.execution_status import build_execution_status
 
 
 def test_distinguishes_not_requested_from_no_hit_and_retrieval_error():
@@ -47,3 +48,26 @@ def test_output_gate_status_is_reported_without_changing_policy():
     assert result["market_data"]["status"] == "success"
     assert result["output_gate"]["status"] == "blocked"
     assert result["output_gate"]["publish_reasons"] == ["evidence gap"]
+
+
+def test_execution_status_distinguishes_input_http_and_mcp_channels():
+    result = build_execution_status(
+        input_received=True,
+        input_length=12,
+        input_sha256="a" * 64,
+        run_metadata={"trigger": "mcp", "channel": "mcp", "operation": "mcp_research_stock"},
+        external_calls=[
+            {"target": "market-price", "ok": True, "latency_ms": 10},
+            {"target": "stock-news", "ok": False, "latency_ms": 20},
+        ],
+    )
+    assert result["user_input"]["status"] == "received"
+    assert result["external_http"]["status"] == "partial"
+    assert result["mcp_tools"]["status"] == "success"
+
+
+def test_execution_status_reports_no_calls_separately_from_failures():
+    result = build_execution_status(input_received=False)
+    assert result["user_input"]["status"] == "empty"
+    assert result["external_http"]["status"] == "not_requested"
+    assert result["mcp_tools"]["status"] == "not_requested"
