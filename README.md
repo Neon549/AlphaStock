@@ -2,7 +2,7 @@
 
 > Evidence-governed A-share research assistant combining fundamental, technical, sentiment and backtest workflows. It produces reviewable research drafts; it does not submit broker orders or provide automated investment execution.
 
-🌐 **Live Demo**: [alphastock.cloud](https://alphastock.cloud) · 📦 **Backend**: [Neon549/Alpha_stock](https://github.com/Neon549/Alpha_stock) · 🖥️ **Frontend**: [Neon549/Alpha_stock_frontend](https://github.com/Neon549/Alpha_stock_frontend)
+🌐 **Live Demo**: [alphastock.cloud](https://alphastock.cloud) · 📦 **Source**: [Neon549/Alpha_stock](https://github.com/Neon549/Alpha_stock)
 
 ---
 
@@ -49,6 +49,7 @@ control_plane/  event routing, run lifecycle and per-run model profile
 agent_runtime/  agents, context, memory, skills, workflows and compatibility adapters
 agent_runtime/compat/langgraph/  opt-in LangGraph adapter for comparison and rollback
 api/            FastAPI delivery endpoints
+frontend/       React + Vite product interface and legacy static page
 backtest/       quantitative domain services
 rag/, tools/    retrieval and external data integrations
 evaluation/     offline evaluation runners and datasets
@@ -80,7 +81,7 @@ opt-in compatibility adapter for rollback and cross-runtime comparison.
 | Observability | LangFuse v2 (full LLM trace via Docker) |
 | Auth | Google OAuth / GitHub OAuth / Email verification (Aliyun Direct Mail) |
 | Backend API | FastAPI |
-| Frontend | React 18 + Vite ([Neon549/Alpha_stock_frontend](https://github.com/Neon549/Alpha_stock_frontend)) |
+| Frontend | React 18 + Vite (`frontend/react-app`) |
 | Deployment | Tencent Cloud · Nginx · Let's Encrypt SSL · UptimeRobot |
 
 ---

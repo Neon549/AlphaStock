@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AlphaStock · 智能 A 股投研平台</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>" />
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body { font-family: system-ui, -apple-system, sans-serif; }
+      #splash {
+        position: fixed; inset: 0; z-index: 9999;
+        background: linear-gradient(135deg, #f0f4ff 0%, #e8eeff 40%, #f5f0ff 100%);
+        display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 0;
+      }
+      #splash .logo {
+        width: 72px; height: 72px; border-radius: 20px;
+        background: linear-gradient(135deg, #4f46e5, #7c3aed);
+        display: flex; align-items: center; justify-content: center;
+        font-size: 36px; font-weight: 800; color: #fff;
+        box-shadow: 0 8px 32px rgba(99,102,241,0.35);
+        margin-bottom: 20px;
+      }
+      #splash h1 {
+        font-size: 28px; font-weight: 800; letter-spacing: -0.5px;
+        background: linear-gradient(135deg, #4f46e5, #7c3aed);
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        margin-bottom: 8px;
+      }
+      #splash p {
+        font-size: 14px; color: #6b7280; margin-bottom: 36px;
+      }
+      #splash .dots {
+        display: flex; gap: 8px;
+      }
+      #splash .dot {
+        width: 8px; height: 8px; border-radius: 50%;
+        background: #4f46e5; opacity: 0.3;
+        animation: pulse 1.2s ease-in-out infinite;
+      }
+      #splash .dot:nth-child(2) { animation-delay: 0.2s; }
+      #splash .dot:nth-child(3) { animation-delay: 0.4s; }
+      @keyframes pulse {
+        0%, 100% { opacity: 0.3; transform: scale(1); }
+        50% { opacity: 1; transform: scale(1.3); }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="splash">
+      <div class="logo">A</div>
+      <h1>AlphaStock</h1>
+      <p>A 股智能投研 · 多维分析引擎</p>
+      <div class="dots">
+        <div class="dot"></div>
+        <div class="dot"></div>
+        <div class="dot"></div>
+      </div>
+    </div>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+    <script>
+      const ro = new MutationObserver(() => {
+        if (document.getElementById('root').childElementCount > 0) {
+          const s = document.getElementById('splash');
+          if (s) { s.style.opacity = '0'; s.style.transition = 'opacity 0.3s'; setTimeout(() => s.remove(), 300); }
+          ro.disconnect();
+        }
+      });
+      ro.observe(document.getElementById('root'), { childList: true });
+    </script>
+  </body>
+</html>

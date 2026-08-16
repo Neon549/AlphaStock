@@ -8,6 +8,7 @@ It is intentionally not used for final trading decisions.
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import time
 from typing import Any, Callable
@@ -16,49 +17,22 @@ from agent_runtime.context.compaction import (
     compact_tool_observations,
     emergency_tool_observations,
     is_context_overflow_error,
-    persist_tool_result,
 )
+from agent_runtime.harness import Harness, RESEARCH, default_harness
 from agent_runtime.reliability import (
-    DEFAULT_TOOL_CACHE,
-    RetryBudget,
     classify_model_failure,
-    classify_tool_failure,
-    invoke_with_failure_policy,
 )
-from control_plane.security import SecurityOperation, authorize_operation
 
 
-MAX_TOOL_CALLS = 3
+MAX_TOOL_CALLS = RESEARCH.max_steps
 MAX_TOOL_RESULT_CHARS = 1_800
 _JSON_OBJECT = re.compile(r"\{.*\}", re.S)
 _TOOL_FIELD = re.compile(r"^([a-z_]+)=(.+)$", re.M)
 _DATE = re.compile(r"((?:19|20)\d{2})[-/]?(\d{2})[-/]?(\d{2})")
 
 _TOOL_CATALOG = {
-    "document-rag": {
-        "permission": "document:read",
-        "description": "Search session-scoped uploaded-document evidence. Arguments: {query}",
-    },
-    "market-price": {
-        "permission": "market:read",
-        "description": "Get current price and basic market verification. No arguments needed.",
-    },
-    "market-history": {
-        "permission": "market:read",
-        "description": "Get bounded daily K-line history for deterministic price evidence. No arguments needed.",
-    },
-    "financial-indicators": {
-        "permission": "market:read",
-        "description": "Get financial indicators for the requested stock. No arguments needed.",
-    },
-    "stock-news": {
-        "permission": "market:read",
-        "description": "Get recent stock news. No arguments needed.",
-    },
-    "memory-search": {
-        "permission": "memory:read",
-        "description": "Search approved Agent-memory Markdown for reusable operating knowledge. Arguments: {query}",
-    },
+    item.name: {"permission": item.permission, "description": item.description}
+    for item in RESEARCH.tools
 }
 
 
@@ -238,10 +212,13 @@ def run_research_harness(
     session_id: str | None = None,
     request_query: str = "",
     runtime_context: str = "",
+    actor_id: str | None = None,
     granted_permissions: set[str] | None = None,
     planner_llm: Any | None = None,
     final_llm: Any | None = None,
     tool_executor: Callable[..., dict[str, Any]] | None = None,
+    harness: Harness | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """Run a bounded evidence loop and return a final research report plus trace."""
     if planner_llm is None or final_llm is None:
@@ -251,15 +228,24 @@ def run_research_harness(
         final_llm = final_llm or deep_llm
     granted = granted_permissions or {"document:read", "market:read", "memory:read"}
     executor = tool_executor or _default_executor
-    available = [
-        {"name": name, "description": spec["description"]}
-        for name, spec in _TOOL_CATALOG.items()
-        if spec["permission"] in granted and (name != "document-rag" or session_id)
-    ]
+    runtime = harness or default_harness()
+    run = runtime.open(
+        "research",
+        {
+            "stock_code": stock_code,
+            "session_id": session_id,
+            "actor_id": actor_id,
+            # The durable state deliberately stores a request fingerprint, not
+            # raw prompt/document content that could be sensitive or stale.
+            "request_sha256": hashlib.sha256(request_query.encode("utf-8")).hexdigest(),
+        },
+        run_id=run_id,
+    )
+    available = run.profile.available(granted, has_session_document=bool(session_id))
     trace: list[dict[str, Any]] = []
     observations: list[dict[str, Any]] = []
     executed_tool_requests: set[tuple[str, str]] = set()
-    retry_budget = RetryBudget()
+    retry_budget = run.retry_budget
     snapshot_text = json.dumps(snapshot, ensure_ascii=False, indent=2)
 
     def model_abort(stage: str, exc: Exception) -> dict[str, Any]:
@@ -269,6 +255,8 @@ def run_research_harness(
             "stage": stage,
             "model_failure": failure.to_dict(),
         })
+        run.record("model_unavailable", stage=stage, error_type=failure.error_type.value)
+        run.abort(reason=f"model_unavailable:{stage}")
         return {
             "report": (
                 "[RESEARCH_ABORT] 模型服务不可用，未生成研究摘要；"
@@ -278,6 +266,7 @@ def run_research_harness(
             "observations": observations,
             "retry_budget": retry_budget.summary(),
             "model_failures": [failure.to_dict()],
+            "harness": run.summary(),
         }
 
     for step in range(MAX_TOOL_CALLS):
@@ -309,15 +298,18 @@ Previous tool observations:
         action = _parse_action(raw)
         if not action:
             trace.append({"step": step + 1, "event": "invalid_planner_output", "raw": _trim(raw)})
+            run.record("planner_invalid", step=step + 1)
             break
         if action["action"] == "final":
             trace.append({"step": step + 1, "event": "final", "reason": action.get("reason", "")})
+            run.record("planner_final", step=step + 1)
             break
 
         tool_name = action.get("tool", "")
-        spec = _TOOL_CATALOG.get(tool_name)
-        if not spec or spec["permission"] not in granted or tool_name not in {item["name"] for item in available}:
+        tool = run.profile.tool(tool_name)
+        if tool is None or tool_name not in {item["name"] for item in available}:
             trace.append({"step": step + 1, "event": "tool_denied", "tool": tool_name})
+            run.record("tool_denied", step=step + 1, tool=tool_name)
             break
 
         tool_query = str(action.get("arguments", {}).get("query") or request_query).strip()
@@ -327,59 +319,25 @@ Previous tool observations:
             continue
         executed_tool_requests.add(request_key)
 
-        permission_tool = {
-            "document-rag": "document:read",
-            "memory-search": "memory:read",
-        }.get(tool_name, "market:read")
-        try:
-            authorize_operation(
-                SecurityOperation(
-                    tool=permission_tool,
-                    target=tool_name,
-                    actor_id=None,
-                    session_id=session_id,
-                ),
-                mode="auto",
-            )
-        except PermissionError:
-            failure = classify_tool_failure(PermissionError("permission denied"))
-            trace.append({
-                "step": step + 1,
-                "event": "permission_denied",
-                "tool": tool_name,
-                "tool_failure": failure.to_dict(),
-            })
-            observations.append({
-                "tool": tool_name,
-                "ok": False,
-                "content": f"[TOOL_ERROR] error_type={failure.error_type.value} message={failure.message}",
-                "tool_failure": failure.to_dict(),
-            })
-            break
-
         started = time.monotonic()
-        result = invoke_with_failure_policy(
-            tool_name,
-            lambda: executor(
+        result = run.tools.call(
+            run,
+            tool=tool,
+            granted=granted,
+            arguments={"query": tool_query},
+            cache_key=json.dumps([tool_name, stock_code, session_id, tool_query], ensure_ascii=False),
+            invoke=lambda: executor(
                 tool_name,
                 stock_code=stock_code,
                 session_id=session_id,
                 query=tool_query,
                 granted_permissions=granted,
             ),
-            cache_key=json.dumps([tool_name, stock_code, session_id, tool_query], ensure_ascii=False),
-            retry_budget=retry_budget,
-            cache=DEFAULT_TOOL_CACHE,
+            stock_code=stock_code,
         )
         content = _trim(result.get("content", ""))
         source_kind = result.get("source_kind", "evidence")
-        result_ref = persist_tool_result(
-            tool=tool_name,
-            content=str(result.get("content", "")),
-            source_kind=source_kind,
-            citations=result.get("citations", []),
-            stock_code=stock_code,
-        )
+        result_ref = result["result_ref"]
         event = {
             "step": step + 1,
             "event": "tool_result",
@@ -410,6 +368,7 @@ Previous tool observations:
         })
     else:
         trace.append({"step": MAX_TOOL_CALLS, "event": "budget_exhausted"})
+        run.record("budget_exhausted", step=MAX_TOOL_CALLS)
 
     def final_prompt(compacted_observations: list[dict[str, Any]]) -> str:
         return f"""You are the research node in an A-share workflow. Use only the structured
@@ -433,9 +392,11 @@ Tool observations:
         )
     except Exception as exc:
         return model_abort("final", exc)
+    run.complete(reason="research_report_ready")
     return {
         "report": report,
         "trace": trace,
         "observations": observations,
         "retry_budget": retry_budget.summary(),
+        "harness": run.summary(),
     }

@@ -1,0 +1,67 @@
+name: Build and Deploy Frontend
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/deploy-frontend.yml"
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/deploy-frontend.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: frontend-production
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/react-app/package-lock.json
+      - name: Build production site
+        working-directory: frontend/react-app
+        run: |
+          npm ci
+          npm run build
+
+  deploy:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/react-app/package-lock.json
+      - name: Build production site
+        working-directory: frontend/react-app
+        run: |
+          npm ci
+          npm run build
+      - name: Upload built site
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.NEON_ALPHA }}
+          source: frontend/react-app/dist/*
+          target: /home/ubuntu/frontend/Alpha_stock_frontend/react-app/dist/
+          strip_components: 3
+      - name: Reload web server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.NEON_ALPHA }}
+          script: systemctl reload nginx

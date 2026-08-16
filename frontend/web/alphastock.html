@@ -1,0 +1,1368 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AlphaStock · 智能 A 股投研平台</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --purple: #6366f1; --purple-dark: #4f46e5; --pink: #d946ef;
+  --ink: #0f172a; --slate: #475569; --muted: #94a3b8;
+  --border: #e2e8f0; --bg: #ffffff; --bg2: #f8fafc; --radius: 14px;
+}
+html { scroll-behavior: smooth; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; color: var(--ink); background: var(--bg); overflow-x: hidden; }
+a { text-decoration: none; color: inherit; }
+
+/* ── Navbar ── */
+nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; background: rgba(255,255,255,0.9); backdrop-filter: blur(16px); border-bottom: 1px solid rgba(226,232,240,0.6); height: 64px; display: flex; align-items: center; }
+.nav-inner { max-width: 1200px; margin: 0 auto; padding: 0 32px; width: 100%; display: flex; align-items: center; justify-content: space-between; }
+.nav-logo { font-size: 20px; font-weight: 800; color: var(--ink); display: flex; align-items: center; gap: 9px; cursor: pointer; letter-spacing: -0.4px; }
+.nav-logo .logo-icon { width: 32px; height: 32px; border-radius: 8px; background: linear-gradient(135deg, var(--purple), var(--pink)); display: flex; align-items: center; justify-content: center; color: white; font-size: 16px; font-weight: 900; }
+.nav-links { display: flex; align-items: center; gap: 4px; list-style: none; }
+.nav-links li { position: relative; }
+.nav-links li a, .nav-links li span { display: flex; align-items: center; gap: 4px; padding: 8px 14px; border-radius: 8px; font-size: 14.5px; font-weight: 600; color: var(--slate); cursor: pointer; transition: all 0.15s; white-space: nowrap; }
+.nav-links li a:hover, .nav-links li span:hover { color: var(--ink); background: var(--bg2); }
+.nav-links li a.active-nav { color: var(--purple); }
+.chevron { width: 14px; height: 14px; opacity: 0.5; transition: transform 0.2s; }
+.dropdown { position: relative; }
+.dropdown-menu { display: none; position: absolute; top: 100%; left: 0; padding-top: 8px; background: white; border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 16px 40px rgba(0,0,0,0.1); min-width: 220px; padding: 8px; z-index: 200; margin-top: 8px; }
+.dropdown-menu::before { content: ''; position: absolute; top: -8px; left: 0; right: 0; height: 8px; }
+.dropdown:hover .dropdown-menu { display: block; }
+.dropdown:hover .chevron { transform: rotate(180deg); }
+.dropdown-menu a { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 8px; font-size: 14px; font-weight: 500; color: var(--slate); transition: all 0.15s; }
+.dropdown-menu a:hover { background: var(--bg2); color: var(--ink); }
+.dm-icon { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; }
+.dm-text { display: flex; flex-direction: column; }
+.dm-label { font-weight: 600; color: var(--ink); font-size: 14px; }
+.dm-desc { font-size: 12px; color: var(--muted); margin-top: 1px; }
+.nav-actions { display: flex; align-items: center; gap: 12px; }
+.btn-login { padding: 8px 18px; border-radius: 8px; font-size: 14.5px; font-weight: 600; color: var(--slate); transition: all 0.15s; cursor: pointer; }
+.btn-login:hover { color: var(--ink); background: var(--bg2); }
+.btn-start { padding: 10px 22px; border-radius: 10px; font-size: 14.5px; font-weight: 700; background: linear-gradient(90deg, var(--purple), var(--pink)); color: white; cursor: pointer; box-shadow: 0 4px 14px rgba(99,102,241,0.35); transition: all 0.2s; border: none; }
+.btn-start:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(99,102,241,0.4); }
+
+/* ── Page System ── */
+.page { display: none; min-height: 100vh; }
+.page.active { display: block; }
+
+/* ══ HOME PAGE ══ */
+#page-home { background: radial-gradient(ellipse at 80% 0%, #f0eaff 0%, #fdf4ff 30%, #ffffff 65%); }
+.hero { max-width: 1200px; margin: 0 auto; padding: 120px 32px 80px; display: flex; align-items: center; gap: 60px; }
+.hero-left { flex: 1.3; }
+.hero-right { flex: 1; }
+.hero-badge { display: inline-flex; align-items: center; gap: 8px; background: rgba(99,102,241,0.08); border: 1px solid rgba(99,102,241,0.2); border-radius: 100px; padding: 6px 16px; margin-bottom: 28px; font-size: 13px; font-weight: 600; color: var(--purple); }
+.hero-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--purple); animation: pulse 2s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+.hero h1 { font-size: clamp(44px, 6vw, 72px); font-weight: 900; line-height: 1.05; letter-spacing: -2.5px; color: var(--ink); margin-bottom: 24px; }
+.hero h1 .grad { background: linear-gradient(90deg, var(--purple), var(--pink)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+.hero-desc { font-size: 18px; color: var(--slate); line-height: 1.7; margin-bottom: 36px; max-width: 520px; }
+.hero-cta { display: flex; align-items: center; gap: 20px; margin-bottom: 48px; }
+.btn-hero { padding: 16px 36px; border-radius: 100px; font-size: 16px; font-weight: 700; background: var(--ink); color: white; cursor: pointer; box-shadow: 0 8px 24px rgba(0,0,0,0.18); transition: all 0.2s; border: none; }
+.btn-hero:hover { transform: translateY(-2px); }
+.hero-tags { display: flex; flex-wrap: wrap; gap: 10px; }
+.hero-tag { padding: 9px 18px; border-radius: 100px; border: 1px solid var(--border); background: white; font-size: 13.5px; font-weight: 600; color: var(--slate); display: flex; align-items: center; gap: 8px; }
+.hero-tag .tag-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--purple); }
+/* Hero mockup card */
+.hero-card { background: white; border-radius: 20px; border: 1px solid var(--border); box-shadow: 0 30px 80px rgba(0,0,0,0.10); overflow: hidden; }
+.hero-card-header { background: var(--ink); padding: 14px 20px; display: flex; align-items: center; gap: 10px; }
+.hc-dots { display: flex; gap: 6px; }
+.hc-dot { width: 10px; height: 10px; border-radius: 50%; }
+.hc-title { color: rgba(255,255,255,0.6); font-size: 13px; font-weight: 500; margin-left: 8px; }
+.hero-card-body { padding: 20px; }
+.hc-stock-row { display: flex; justify-content: space-between; align-items: center; background: var(--bg2); border-radius: 12px; padding: 14px 18px; margin-bottom: 12px; border: 1px solid var(--border); }
+.hc-stock-name { font-weight: 700; font-size: 15px; }
+.hc-stock-code { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.hc-badge-buy { background: #dcfce7; color: #16a34a; padding: 5px 12px; border-radius: 100px; font-size: 12px; font-weight: 700; }
+.hc-badge-hold { background: #fef9c3; color: #ca8a04; padding: 5px 12px; border-radius: 100px; font-size: 12px; font-weight: 700; }
+.hc-metrics { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-top: 12px; }
+.hc-metric { background: var(--bg2); border-radius: 10px; padding: 12px; border: 1px solid var(--border); }
+.hc-metric-val { font-size: 18px; font-weight: 800; }
+.hc-metric-val.up { color: #16a34a; }
+.hc-metric-label { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.hc-analysis { margin-top: 14px; background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 12px; padding: 14px 16px; color: #38bdf8; font-family: monospace; font-size: 12px; line-height: 1.7; }
+.hc-analysis .hc-tag { color: #a78bfa; }
+.hc-analysis .hc-val { color: #34d399; }
+
+/* ── Sections ── */
+section { padding: 100px 32px; }
+.section-inner { max-width: 1200px; margin: 0 auto; }
+.section-eyebrow { font-size: 12px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: var(--purple); margin-bottom: 16px; }
+.section-title { font-size: clamp(32px,4vw,48px); font-weight: 900; letter-spacing: -1.5px; color: var(--ink); margin-bottom: 16px; line-height: 1.1; }
+.section-desc { font-size: 17px; color: var(--slate); max-width: 560px; line-height: 1.7; }
+
+/* Intro */
+#intro { background: var(--ink); }
+#intro .section-eyebrow { color: #a78bfa; }
+#intro .section-title { color: white; }
+#intro .section-desc { color: rgba(255,255,255,0.6); max-width: 700px; }
+.intro-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 60px; }
+.intro-card { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; padding: 32px; transition: all 0.2s; }
+.intro-card:hover { background: rgba(255,255,255,0.08); transform: translateY(-2px); }
+.intro-card-icon { font-size: 32px; margin-bottom: 16px; }
+.intro-card-title { font-size: 20px; font-weight: 700; color: white; margin-bottom: 10px; }
+.intro-card-desc { font-size: 14px; color: rgba(255,255,255,0.55); line-height: 1.7; }
+
+/* Stats */
+#stats { background: linear-gradient(135deg, var(--purple), var(--pink)); padding: 80px 32px; }
+.stats-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 32px; max-width: 1200px; margin: 0 auto; }
+.stat-item { text-align: center; }
+.stat-val { font-size: 52px; font-weight: 900; color: white; letter-spacing: -2px; line-height: 1; margin-bottom: 8px; }
+.stat-label { font-size: 15px; color: rgba(255,255,255,0.75); font-weight: 500; }
+
+/* Contact */
+#contact { background: var(--bg2); }
+.contact-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 80px; align-items: start; margin-top: 60px; }
+.contact-info-title { font-size: 20px; font-weight: 700; color: var(--ink); margin-bottom: 12px; }
+.contact-info-desc { font-size: 15px; color: var(--slate); line-height: 1.7; margin-bottom: 32px; }
+.contact-links { display: flex; flex-direction: column; gap: 16px; }
+.contact-link { display: flex; align-items: center; gap: 14px; padding: 16px 20px; background: white; border: 1px solid var(--border); border-radius: 14px; transition: all 0.15s; }
+.contact-link:hover { border-color: var(--purple); box-shadow: 0 4px 12px rgba(99,102,241,0.1); }
+.contact-link-icon { font-size: 22px; }
+.contact-link-text { font-weight: 600; color: var(--ink); font-size: 15px; }
+.contact-link-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.contact-form-card { background: white; border: 1px solid var(--border); border-radius: 20px; padding: 36px; }
+.cf-title { font-size: 20px; font-weight: 700; color: var(--ink); margin-bottom: 24px; }
+.cf-group { margin-bottom: 18px; }
+.cf-label { font-size: 13px; font-weight: 600; color: var(--slate); margin-bottom: 7px; display: block; }
+.cf-input, .cf-textarea { width: 100%; padding: 12px 16px; border: 1px solid var(--border); border-radius: 10px; font-size: 14px; color: var(--ink); background: var(--bg2); outline: none; transition: all 0.15s; font-family: inherit; }
+.cf-input:focus, .cf-textarea:focus { border-color: var(--purple); box-shadow: 0 0 0 3px rgba(99,102,241,0.1); background: white; }
+.cf-textarea { resize: vertical; min-height: 100px; }
+.cf-submit { width: 100%; padding: 14px; border-radius: 12px; border: none; background: linear-gradient(90deg, var(--purple), var(--pink)); color: white; font-size: 15px; font-weight: 700; cursor: pointer; transition: all 0.2s; }
+.cf-submit:hover { transform: translateY(-1px); }
+
+/* Footer */
+footer { background: var(--ink); padding: 64px 32px 32px; }
+.footer-inner { max-width: 1200px; margin: 0 auto; }
+.footer-top { display: grid; grid-template-columns: 1.5fr 1fr 1fr 1fr; gap: 48px; margin-bottom: 48px; }
+.footer-logo { font-size: 20px; font-weight: 800; color: white; display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.footer-logo .logo-icon { width: 30px; height: 30px; border-radius: 8px; background: linear-gradient(135deg, var(--purple), var(--pink)); display: flex; align-items: center; justify-content: center; color: white; font-size: 15px; font-weight: 900; }
+.footer-brand-desc { font-size: 14px; color: rgba(255,255,255,0.45); line-height: 1.7; max-width: 260px; }
+.footer-col-title { font-size: 12px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: rgba(255,255,255,0.35); margin-bottom: 18px; }
+.footer-links { display: flex; flex-direction: column; gap: 12px; }
+.footer-links a { font-size: 14px; color: rgba(255,255,255,0.55); transition: color 0.15s; cursor: pointer; }
+.footer-links a:hover { color: white; }
+.footer-bottom { padding-top: 32px; border-top: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: space-between; align-items: center; }
+.footer-copy { font-size: 13px; color: rgba(255,255,255,0.3); }
+.footer-socials { display: flex; gap: 10px; }
+.social-btn { width: 36px; height: 36px; border-radius: 9px; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.1); display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,0.5); font-size: 16px; transition: all 0.15s; }
+.social-btn:hover { background: rgba(255,255,255,0.12); color: white; }
+
+/* ══ FUNCTION PAGES ══ */
+.func-page { padding-top: 64px; min-height: 100vh; background: #f8fafc; }
+.func-header { background: white; border-bottom: 1px solid var(--border); padding: 28px 40px; }
+.func-header h1 { font-size: 28px; font-weight: 800; color: var(--ink); letter-spacing: -0.5px; }
+.func-header p { font-size: 14px; color: var(--muted); margin-top: 6px; }
+.func-body { max-width: 1000px; margin: 40px auto; padding: 0 40px 80px; }
+.func-card { background: white; border: 1px solid var(--border); border-radius: 16px; padding: 28px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.04); }
+.func-card h3 { font-size: 16px; font-weight: 700; color: var(--ink); margin-bottom: 16px; }
+.form-row { display: grid; gap: 16px; margin-bottom: 16px; }
+.form-row.cols-2 { grid-template-columns: 1fr 1fr; }
+.form-row.cols-4 { grid-template-columns: 1.2fr 1.5fr 0.9fr 0.9fr; }
+.form-group label { font-size: 13px; font-weight: 600; color: var(--slate); display: block; margin-bottom: 7px; }
+.form-group input, .form-group select { width: 100%; padding: 11px 14px; border: 1px solid var(--border); border-radius: 10px; font-size: 14px; color: var(--ink); background: var(--bg2); outline: none; font-family: inherit; transition: border-color 0.15s; }
+.form-group input:focus, .form-group select:focus { border-color: var(--purple); box-shadow: 0 0 0 3px rgba(99,102,241,0.1); background: white; }
+.btn-primary { padding: 13px 28px; border-radius: 10px; border: none; background: linear-gradient(90deg, var(--purple), var(--pink)); color: white; font-size: 15px; font-weight: 700; cursor: pointer; transition: all 0.2s; width: 100%; margin-top: 8px; }
+.btn-primary:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(99,102,241,0.3); }
+.btn-primary:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+.result-box { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-top: 20px; }
+.result-grid { display: grid; grid-template-columns: repeat(5,1fr); gap: 16px; margin-bottom: 20px; }
+.result-metric { text-align: center; }
+.result-metric .val { font-size: 22px; font-weight: 800; color: var(--ink); }
+.result-metric .val.up { color: #16a34a; }
+.result-metric .val.down { color: #dc2626; }
+.result-metric .lbl { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.loading { text-align: center; padding: 40px; color: var(--muted); }
+.loading .spinner { width: 32px; height: 32px; border: 3px solid var(--border); border-top-color: var(--purple); border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 12px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.tag-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.tag { padding: 6px 14px; border-radius: 100px; background: rgba(99,102,241,0.08); color: var(--purple); font-size: 13px; font-weight: 600; }
+.score-bar-wrap { margin-bottom: 12px; }
+.score-bar-label { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 4px; }
+.score-bar { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.score-bar-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--purple), var(--pink)); transition: width 0.6s ease; }
+.stock-result-card { background: white; border: 1px solid var(--border); border-radius: 12px; padding: 16px 20px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
+.stock-result-name { font-weight: 700; font-size: 15px; }
+.stock-result-code { font-size: 12px; color: var(--muted); }
+.badge { padding: 4px 12px; border-radius: 100px; font-size: 12px; font-weight: 700; }
+.badge-buy { background: #dcfce7; color: #16a34a; }
+.badge-hold { background: #fef9c3; color: #ca8a04; }
+.badge-sell { background: #fee2e2; color: #dc2626; }
+.empty-state { text-align: center; padding: 60px 20px; color: var(--muted); }
+.empty-state .empty-icon { font-size: 48px; margin-bottom: 12px; }
+.empty-state p { font-size: 15px; }
+
+/* ── Modal ── */
+.modal-overlay { display: none; position: fixed; inset: 0; z-index: 1000; background: rgba(15,23,42,0.6); backdrop-filter: blur(6px); align-items: center; justify-content: center; }
+.modal-overlay.open { display: flex; }
+.modal { background: white; border-radius: 24px; padding: 40px; width: 100%; max-width: 420px; position: relative; box-shadow: 0 40px 80px rgba(0,0,0,0.2); animation: modalIn 0.25s ease; }
+@keyframes modalIn { from { opacity:0; transform:translateY(20px) scale(0.97); } to { opacity:1; transform:none; } }
+.modal-close { position: absolute; top: 16px; right: 16px; width: 32px; height: 32px; border-radius: 8px; border: none; background: var(--bg2); cursor: pointer; font-size: 18px; color: var(--slate); display: flex; align-items: center; justify-content: center; }
+.modal-close:hover { background: var(--border); }
+.modal-logo { text-align: center; margin-bottom: 24px; }
+.modal-logo .m-icon { width: 52px; height: 52px; border-radius: 14px; margin: 0 auto 12px; background: linear-gradient(135deg, var(--purple), var(--pink)); display: flex; align-items: center; justify-content: center; color: white; font-size: 22px; font-weight: 900; }
+.modal-title { font-size: 22px; font-weight: 800; color: var(--ink); margin-bottom: 4px; }
+.modal-sub { font-size: 13.5px; color: var(--muted); }
+.m-tabs { display: flex; border-bottom: 2px solid var(--border); margin-bottom: 24px; }
+.m-tab { flex: 1; padding: 12px; text-align: center; font-size: 14.5px; font-weight: 600; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all 0.15s; }
+.m-tab.active { color: var(--ink); border-bottom-color: var(--ink); }
+.m-panel { display: none; }
+.m-panel.active { display: block; }
+.oauth-row { display: flex; gap: 10px; margin-bottom: 20px;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.oauth-btn { flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 12px; border: 1.5px solid var(--border); border-radius: 12px; font-size: 14px; font-weight: 600; color: #334155; background: white; cursor: pointer; transition: all 0.15s;
+  width: 280px;
+  justify-content: center;
+}
+.oauth-btn:hover { border-color: var(--purple); }
+.m-divider { display: flex; align-items: center; gap: 12px; margin: 16px 0; color: var(--muted); font-size: 12px; }
+.m-divider::before, .m-divider::after { content:''; flex:1; height:1px; background:var(--border); }
+.m-group { margin-bottom: 16px; }
+.m-label { font-size: 13px; font-weight: 600; color: var(--slate); margin-bottom: 7px; display: block; }
+.m-input { width: 100%; padding: 12px 16px; border: 1.5px solid var(--border); border-radius: 10px; font-size: 14px; color: var(--ink); background: var(--bg2); outline: none; transition: all 0.15s; font-family: inherit; }
+.m-input:focus { border-color: var(--purple); box-shadow: 0 0 0 3px rgba(99,102,241,0.1); background: white; }
+.m-submit { width: 100%; padding: 14px; border-radius: 12px; border: none; margin-top: 8px; background: var(--ink); color: white; font-size: 15px; font-weight: 700; cursor: pointer; transition: all 0.2s; }
+.m-submit:hover { background: #1e293b; }
+.m-error { color: #dc2626; font-size: 13px; margin-top: 12px; display: none; padding: 10px 14px; background: #fef2f2; border-radius: 8px; }
+.m-error.show { display: block; }
+.pw-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 10px; }
+.pw-item { font-size: 12px; font-weight: 600; display: flex; gap: 5px; align-items: center; color: var(--muted); }
+.pw-item.ok { color: #16a34a; }
+
+/* Slider */
+.slider-wrap { display: flex; align-items: center; gap: 12px; }
+.slider-wrap input[type=range] { flex: 1; accent-color: var(--purple); }
+.slider-val { font-weight: 700; color: var(--purple); min-width: 36px; text-align: right; }
+
+@media (max-width: 768px) {
+  .hero { flex-direction: column; padding: 100px 20px 60px; }
+  .intro-grid, .contact-layout, .form-row.cols-4 { grid-template-columns: 1fr; }
+  .stats-grid { grid-template-columns: 1fr 1fr; }
+  .footer-top { grid-template-columns: 1fr 1fr; }
+  nav .nav-links { display: none; }
+}
+</style>
+<script src="https://accounts.google.com/gsi/client" onload="initGoogleLogin()" onerror="console.warn('GSI failed to load')"></script>
+</head>
+<body>
+
+<!-- ═══ NAVBAR ═══ -->
+<nav>
+  <div class="nav-inner">
+    <div class="nav-logo" onclick="showPage('home')">
+      <div class="logo-icon">A</div>AlphaStock
+    </div>
+    <ul class="nav-links">
+      <li><a onclick="scrollToSection(event,'intro')">Project Intro</a></li>
+      <li class="dropdown">
+        <span>Product <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg></span>
+        <div class="dropdown-menu">
+          <a onclick="showFuncPage('backtest')">
+            <div class="dm-icon" style="background:#ede9fe">📊</div>
+            <div class="dm-text"><span class="dm-label">量化回测</span><span class="dm-desc">历史策略验证与收益分析</span></div>
+          </a>
+          <a onclick="showFuncPage('alpha')">
+            <div class="dm-icon" style="background:#fef9c3">✨</div>
+            <div class="dm-text"><span class="dm-label">Alpha 选股</span><span class="dm-desc">多维评分筛选优质标的</span></div>
+          </a>
+          <a onclick="showFuncPage('scan')">
+            <div class="dm-icon" style="background:#dcfce7">🎯</div>
+            <div class="dm-text"><span class="dm-label">今日买点</span><span class="dm-desc">全市场技术信号扫描</span></div>
+          </a>
+          <a onclick="showFuncPage('filter')">
+            <div class="dm-icon" style="background:#e0f2fe">🔍</div>
+            <div class="dm-text"><span class="dm-label">板块筛选</span><span class="dm-desc">估值与景气度综合优选</span></div>
+          </a>
+        </div>
+      </li>
+      <li><a onclick="goToApp('chat')">Alpha AI</a></li>
+      <li><a onclick="scrollToSection(event,'contact')">Contact</a></li>
+    </ul>
+    <div class="nav-actions" id="navActions">
+      <span class="btn-login" onclick="openModal('login')">Log In</span>
+      <button class="btn-start" onclick="goToApp('chat')">Get Started ›</button>
+    </div>
+  </div>
+</nav>
+
+<!-- ═══════════════════════════════════════════
+     HOME PAGE
+════════════════════════════════════════════ -->
+<div id="page-home" class="page active">
+
+  <!-- Hero -->
+  <div class="hero">
+    <div class="hero-left">
+      <div class="hero-badge"><div class="dot"></div>A 股智能投研 · 多维分析引擎</div>
+      <h1>Meet Your AI<br><span class="grad">Trading Partner</span></h1>
+      <p class="hero-desc">专为 A 股投资者设计的智能投研平台。输入一个股票代码，AI 从多个视角同时分析，几分钟内给出买入、观望或减仓的明确建议。</p>
+      <div class="hero-cta">
+        <button class="btn-hero" onclick="goToApp('chat')">开始分析</button>
+      </div>
+      <div style="font-size:12px;font-weight:700;color:var(--muted);letter-spacing:2px;text-transform:uppercase;margin-bottom:14px;">六大工具 · 一站投研</div>
+      <div class="hero-tags">
+        <span class="hero-tag"><span class="tag-dot"></span>AI 研报生成</span>
+        <span class="hero-tag">量化回测</span>
+        <span class="hero-tag">Alpha 选股</span>
+        <span class="hero-tag">今日买点</span>
+        <span class="hero-tag">板块筛选</span>
+        <span class="hero-tag">多视角辩论决策</span>
+      </div>
+    </div>
+    <div class="hero-right">
+      <div class="hero-card">
+        <div class="hero-card-header">
+          <div class="hc-dots">
+            <div class="hc-dot" style="background:#ff5f56"></div>
+            <div class="hc-dot" style="background:#febc2e"></div>
+            <div class="hc-dot" style="background:#27c93f"></div>
+          </div>
+          <span class="hc-title">AlphaStock · AI 分析引擎</span>
+        </div>
+        <div class="hero-card-body">
+          <div class="hc-stock-row">
+            <div><div class="hc-stock-name">中国船舶</div><div class="hc-stock-code">600150 · 造船</div></div>
+            <span class="hc-badge-buy">🔴 买入建议</span>
+          </div>
+          <div class="hc-stock-row">
+            <div><div class="hc-stock-name">中际旭创</div><div class="hc-stock-code">300308 · 光模块</div></div>
+            <span class="hc-badge-hold">🟡 观望状态</span>
+          </div>
+          <div class="hc-metrics">
+            <div class="hc-metric"><div class="hc-metric-val up">+24.6%</div><div class="hc-metric-label">策略收益</div></div>
+            <div class="hc-metric"><div class="hc-metric-val">2.14</div><div class="hc-metric-label">夏普比率</div></div>
+            <div class="hc-metric"><div class="hc-metric-val">78%</div><div class="hc-metric-label">胜率</div></div>
+          </div>
+          <div class="hc-analysis">
+            <span class="hc-tag">[多头视角]</span> 订单饱满，景气上行<br>
+            <span class="hc-tag">[空头视角]</span> 短期回调风险需关注<br>
+            <span class="hc-tag">[技术面]</span> KDJ 超卖，底部支撑有效<br>
+            <span class="hc-val">[综合决策]</span> 建议买入，仓位 30%
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Project Intro -->
+  <section id="intro">
+    <div class="section-inner">
+      <div class="section-eyebrow">About This Project</div>
+      <h2 class="section-title">为什么选择 AlphaStock</h2>
+      <p class="section-desc" style="color:rgba(255,255,255,0.6)">一个人的精力有限，但市场每天都在变化。AlphaStock 帮你从海量数据中找到真正值得关注的机会，让决策更有依据。</p>
+      <div class="intro-grid">
+        <div class="intro-card">
+          <div class="intro-card-icon">🧠</div>
+          <div class="intro-card-title">多视角交叉验证</div>
+          <div class="intro-card-desc">系统同时从基本面、技术面、市场情绪三个维度分析同一标的，多头与空头视角相互辩论，最终给出综合决策，而不是单一指标的片面判断。</div>
+        </div>
+        <div class="intro-card">
+          <div class="intro-card-icon">📊</div>
+          <div class="intro-card-title">策略回测验证</div>
+          <div class="intro-card-desc">在真实历史数据上验证交易策略的有效性，查看收益曲线、最大回撤和胜率，用数据说话，避免凭感觉操作。</div>
+        </div>
+        <div class="intro-card">
+          <div class="intro-card-icon">✨</div>
+          <div class="intro-card-title">全市场自动筛选</div>
+          <div class="intro-card-desc">不需要一只一只看，系统自动扫描全市场，根据多项指标打分排序，把符合条件的标的直接呈现给你，节省大量时间。</div>
+        </div>
+        <div class="intro-card">
+          <div class="intro-card-icon">⚡</div>
+          <div class="intro-card-title">实时数据驱动</div>
+          <div class="intro-card-desc">接入实时行情数据，分析结果基于最新市场状态，不是过时的信息。支持上传财报截图，AI 自动提取关键数据纳入分析。</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Stats -->
+  <section id="stats">
+    <div class="stats-grid">
+      <div class="stat-item"><div class="stat-val">5</div><div class="stat-label">内置量化策略</div></div>
+      <div class="stat-item"><div class="stat-val">6</div><div class="stat-label">分析工具</div></div>
+      <div class="stat-item"><div class="stat-val">3</div><div class="stat-label">推理引擎可选</div></div>
+      <div class="stat-item"><div class="stat-val">全市场</div><div class="stat-label">A 股覆盖</div></div>
+    </div>
+  </section>
+
+  <!-- Contact -->
+  <section id="contact">
+    <div class="section-inner">
+      <div class="section-eyebrow">Contact</div>
+      <h2 class="section-title">联系我们</h2>
+      <div class="contact-layout">
+        <div>
+          <div class="contact-info-title">有任何问题都可以联系</div>
+          <div class="contact-info-desc">产品反馈、合作洽谈或技术问题，会在 24 小时内回复。</div>
+          <div class="contact-links">
+            <a href="mailto:yulingyu08@gmail.com" class="contact-link">
+              <span class="contact-link-icon">✉️</span>
+              <div><div class="contact-link-text">Email</div><div class="contact-link-sub">yulingyu08@gmail.com</div></div>
+            </a>
+            <a href="https://github.com/Neon549" target="_blank" class="contact-link">
+              <span class="contact-link-icon">🐙</span>
+              <div><div class="contact-link-text">GitHub</div><div class="contact-link-sub">查看源码</div></div>
+            </a>
+          </div>
+        </div>
+        <div class="contact-form-card">
+          <div class="cf-title">发送消息</div>
+          <div class="cf-group"><label class="cf-label">姓名</label><input class="cf-input" placeholder="你的名字" id="cf-name"></div>
+          <div class="cf-group"><label class="cf-label">邮箱</label><input class="cf-input" type="email" placeholder="your@email.com" id="cf-email"></div>
+          <div class="cf-group"><label class="cf-label">消息</label><textarea class="cf-textarea" placeholder="说说你的想法…" id="cf-msg"></textarea></div>
+          <button class="cf-submit" onclick="sendContact()">发送消息</button>
+          <div id="cf-success" style="display:none;margin-top:14px;color:#16a34a;font-size:14px;font-weight:600;text-align:center">✓ 消息已发送！</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div>
+          <div class="footer-logo"><div class="logo-icon">A</div>AlphaStock</div>
+          <div class="footer-brand-desc">专为 A 股投资者设计的智能投研平台。工具仅供参考，不构成投资建议，投资有风险，入市需谨慎。</div>
+        </div>
+        <div>
+          <div class="footer-col-title">Product</div>
+          <div class="footer-links">
+            <a onclick="goToApp('chat')">Alpha AI 助手</a>
+            <a onclick="showFuncPage('backtest')">量化回测</a>
+            <a onclick="showFuncPage('alpha')">Alpha 选股</a>
+            <a onclick="showFuncPage('scan')">今日买点</a>
+            <a onclick="showFuncPage('filter')">板块筛选</a>
+          </div>
+        </div>
+        <div>
+          <div class="footer-col-title">Company</div>
+          <div class="footer-links">
+            <a onclick="scrollToSection(event,'intro')">项目介绍</a>
+            <a onclick="scrollToSection(event,'contact')">联系我们</a>
+            <a href="mailto:yulingyu08@gmail.com">合作洽谈</a>
+          </div>
+        </div>
+        <div>
+          <div class="footer-col-title">Legal</div>
+          <div class="footer-links">
+            <a href="#">隐私政策</a>
+            <a href="#">使用条款</a>
+            <a href="#">免责声明</a>
+          </div>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <div class="footer-copy">© 2026 AlphaStock · yulingyu08@gmail.com</div>
+        <div class="footer-socials">
+          <a href="mailto:yulingyu08@gmail.com" class="social-btn">✉</a>
+          <a href="https://github.com/Neon549" target="_blank" class="social-btn">⌥</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+</div><!-- /page-home -->
+
+<!-- ═══════════════════════════════════════════
+     BACKTEST PAGE
+════════════════════════════════════════════ -->
+<div id="page-backtest" class="page">
+  <div class="func-page">
+    <div class="func-header">
+      <h1>📊 量化回测</h1>
+      <p>选择策略和时间范围，在历史数据上验证交易逻辑</p>
+    </div>
+    <div class="func-body">
+      <div class="func-card">
+        <h3>回测参数</h3>
+        <div class="form-row cols-4">
+          <div class="form-group"><label>目标标的代码</label><input id="bt-code" value="600150" placeholder="如 600150"></div>
+          <div class="form-group"><label>核心策略</label>
+            <select id="bt-strat">
+              <option value="kdj_oversold">KDJ 超卖反弹</option>
+              <option value="j_extreme">J线极值反转</option>
+              <option value="rsi">RSI 相对强弱</option>
+              <option value="boll">布林带突破</option>
+              <option value="kdj_macd">KDJ+MACD 共振</option>
+            </select>
+          </div>
+          <div class="form-group"><label>回测起点</label><input id="bt-start" value="20240101" placeholder="YYYYMMDD"></div>
+          <div class="form-group"><label>回测终点</label><input id="bt-end" value="20260530" placeholder="YYYYMMDD"></div>
+        </div>
+        <button class="btn-primary" onclick="runBacktest()" id="bt-btn">🚀 启动回测</button>
+      </div>
+      <div id="bt-loading" style="display:none" class="func-card">
+        <div class="loading"><div class="spinner"></div>正在加载历史数据并运行策略，请稍候…</div>
+      </div>
+      <div id="bt-result" style="display:none" class="func-card">
+        <h3>回测结果</h3>
+        <div class="result-grid" id="bt-metrics"></div>
+        <div id="bt-chart" style="height:200px;background:var(--bg2);border-radius:10px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:14px">收益曲线将在此显示</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     ALPHA PAGE
+════════════════════════════════════════════ -->
+<div id="page-alpha" class="page">
+  <div class="func-page">
+    <div class="func-header">
+      <h1>✨ Alpha 选股</h1>
+      <p>多维因子综合评分，自动筛选符合条件的优质标的</p>
+    </div>
+    <div class="func-body">
+      <div class="func-card">
+        <h3>筛选参数</h3>
+        <div class="form-row cols-2">
+          <div class="form-group"><label>资产池</label>
+            <select id="alpha-sector">
+              <option value="">全部（A股动态池）</option>
+              <option value="CPO光模块">CPO光模块</option>
+              <option value="PCB">PCB</option>
+              <option value="半导体">半导体</option>
+              <option value="AI算力">AI算力</option>
+              <option value="造船">造船</option>
+              <option value="军工">军工</option>
+              <option value="低空经济">低空经济</option>
+              <option value="新能源储能">新能源储能</option>
+              <option value="有色金属">有色金属</option>
+              <option value="煤炭能源">煤炭能源</option>
+              <option value="化工">化工</option>
+              <option value="医药">医药</option>
+              <option value="消费白酒">消费白酒</option>
+              <option value="银行">银行</option>
+              <option value="机器人">机器人</option>
+              <option value="汽车整车">汽车整车</option>
+              <option value="锂电池">锂电池</option>
+              <option value="光伏太阳能">光伏太阳能</option>
+              <option value="风电">风电</option>
+              <option value="电力">电力</option>
+              <option value="钢铁">钢铁</option>
+              <option value="建筑材料">建筑材料</option>
+              <option value="农业">农业</option>
+              <option value="食品饮料">食品饮料</option>
+              <option value="医疗器械">医疗器械</option>
+              <option value="证券">证券</option>
+              <option value="保险">保险</option>
+              <option value="航空航天">航空航天</option>
+              <option value="传媒娱乐">传媒娱乐</option>
+              <option value="物流快递">物流快递</option>
+              <option value="消费电子">消费电子</option>
+              <option value="云计算软件">云计算软件</option>
+              <option value="网络安全">网络安全</option>
+              <option value="工业自动化">工业自动化</option>
+              <option value="房地产">房地产</option>
+              <option value="化工材料">化工材料</option>
+              <option value="稀土特材">稀土特材</option>
+              <option value="银行扩充">银行扩充</option>
+              <option value="半导体扩充">半导体扩充</option>
+              <option value="AI大模型">AI大模型</option>
+              <option value="汽车零部件扩充">汽车零部件扩充</option>
+              <option value="医药生物扩充">医药生物扩充</option>
+              <option value="新能源车产业链">新能源车产业链</option>
+              <option value="消费白酒扩充">消费白酒扩充</option>
+              <option value="银行扩充2">银行扩充2</option>
+              <option value="地产链">地产链</option>
+              <option value="消费零售">消费零售</option>
+              <option value="军工扩充">军工扩充</option>
+              <option value="数字经济">数字经济</option>
+              <option value="稀有金属">稀有金属</option>
+              <option value="电子元器件">电子元器件</option>
+              <option value="通信设备">通信设备</option>
+              <option value="机械设备">机械设备</option>
+              <option value="纺织服装">纺织服装</option>
+              <option value="旅游酒店">旅游酒店</option>
+              <option value="教育">教育</option>
+              <option value="环保">环保</option>
+              <option value="传统能源">传统能源</option>
+              <option value="黄金珠宝">黄金珠宝</option>
+              <option value="游戏">游戏</option>
+              <option value="农化">农化</option>
+              <option value="水务">水务</option>
+              <option value="大金融">大金融</option>
+              <option value="基建交通">基建交通</option>
+              <option value="医药扩充2">医药扩充2</option>
+              <option value="智能制造">智能制造</option>
+              <option value="半导体材料">半导体材料</option>
+              <option value="消费升级">消费升级</option>
+              <option value="新材料">新材料</option>
+              <option value="零售电商">零售电商</option>
+            </select>
+          </div>
+          <div class="form-group"><label>最低分 <span id="alpha-min-val" style="color:var(--purple);font-weight:700">60</span></label>
+            <div class="slider-wrap"><input type="range" min="50" max="90" value="60" oninput="document.getElementById('alpha-min-val').textContent=this.value"><span class="slider-val" id="alpha-min-val2">60</span></div>
+          </div>
+        </div>
+        <button class="btn-primary" onclick="runAlpha()" id="alpha-btn">⚡ 开始筛选</button>
+      </div>
+      <div id="alpha-loading" style="display:none" class="func-card">
+        <div class="loading"><div class="spinner"></div>并行计算中，全市场扫描约需 2-5 分钟…</div>
+      </div>
+      <div id="alpha-result" style="display:none" class="func-card">
+        <h3>筛选结果</h3>
+        <div id="alpha-list"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     SCAN PAGE
+════════════════════════════════════════════ -->
+<div id="page-scan" class="page">
+  <div class="func-page">
+    <div class="func-header">
+      <h1>🎯 今日买点</h1>
+      <p>全市场技术面超卖信号扫描，市值 ≥300 亿</p>
+    </div>
+    <div class="func-body">
+      <div class="func-card">
+        <h3>扫描参数</h3>
+        <div class="form-row cols-2" style="margin-bottom:16px">
+          <div class="form-group"><label>扫描策略</label>
+            <select id="scan-strategy">
+              <option value="all">全部信号（KDJ超卖 + KDJ金叉）</option>
+              <option value="oversold">KDJ 超卖反弹（J值极低）</option>
+              <option value="cross">KDJ 金叉（K线上穿J线）</option>
+            </select>
+          </div>
+          <div class="form-group"><label>数据起始日期</label>
+            <input id="scan-start" value="20230101" placeholder="YYYYMMDD">
+          </div>
+        </div>
+        <div class="form-row cols-2" style="margin-bottom:16px">
+          <div class="form-group"><label>结果上限 <span id="scan-n-val" style="color:var(--purple);font-weight:700">10</span></label>
+            <div class="slider-wrap"><input type="range" min="5" max="30" value="10" oninput="document.getElementById('scan-n-val').textContent=this.value;scanN=this.value"><span class="slider-val">10</span></div>
+          </div>
+          <div class="form-group"><label>策略说明</label>
+            <div style="font-size:13px;color:var(--muted);line-height:1.7;padding-top:4px">
+              超卖：KDJ J值低于15，适合抄底<br>
+              金叉：K线上穿J线且低位，适合趋势跟随
+            </div>
+          </div>
+        </div>
+        <button class="btn-primary" onclick="runScan()" id="scan-btn">📡 发射扫描</button>
+      </div>
+      <div id="scan-loading" style="display:none" class="func-card">
+        <div class="loading"><div class="spinner"></div>全市场扫描中，约需 3-5 分钟…</div>
+      </div>
+      <div id="scan-result" style="display:none" class="func-card">
+        <h3>扫描结果</h3>
+        <div id="scan-list"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     FILTER PAGE
+════════════════════════════════════════════ -->
+<div id="page-filter" class="page">
+  <div class="func-page">
+    <div class="func-header">
+      <h1>🔍 板块筛选</h1>
+      <p>基于景气周期与估值，从细分板块中优选龙头</p>
+    </div>
+    <div class="func-body">
+      <div class="func-card">
+        <h3>筛选参数</h3>
+        <div class="form-row cols-2" style="margin-bottom:16px">
+          <div class="form-group"><label>监控板块</label>
+            <select id="filter-sector">
+              <option value="CPO光模块">CPO光模块</option>
+              <option value="PCB">PCB</option>
+              <option value="半导体">半导体</option>
+              <option value="AI算力">AI算力</option>
+              <option value="造船">造船</option>
+              <option value="军工">军工</option>
+              <option value="低空经济">低空经济</option>
+              <option value="新能源储能">新能源储能</option>
+              <option value="有色金属">有色金属</option>
+              <option value="煤炭能源">煤炭能源</option>
+              <option value="化工">化工</option>
+              <option value="医药">医药</option>
+              <option value="消费白酒">消费白酒</option>
+              <option value="银行">银行</option>
+              <option value="机器人">机器人</option>
+              <option value="汽车整车">汽车整车</option>
+              <option value="锂电池">锂电池</option>
+              <option value="光伏太阳能">光伏太阳能</option>
+              <option value="风电">风电</option>
+              <option value="电力">电力</option>
+              <option value="钢铁">钢铁</option>
+              <option value="建筑材料">建筑材料</option>
+              <option value="农业">农业</option>
+              <option value="食品饮料">食品饮料</option>
+              <option value="医疗器械">医疗器械</option>
+              <option value="证券">证券</option>
+              <option value="保险">保险</option>
+              <option value="航空航天">航空航天</option>
+              <option value="传媒娱乐">传媒娱乐</option>
+              <option value="物流快递">物流快递</option>
+              <option value="消费电子">消费电子</option>
+              <option value="云计算软件">云计算软件</option>
+              <option value="网络安全">网络安全</option>
+              <option value="工业自动化">工业自动化</option>
+              <option value="房地产">房地产</option>
+              <option value="化工材料">化工材料</option>
+              <option value="稀土特材">稀土特材</option>
+              <option value="银行扩充">银行扩充</option>
+              <option value="半导体扩充">半导体扩充</option>
+              <option value="AI大模型">AI大模型</option>
+              <option value="汽车零部件扩充">汽车零部件扩充</option>
+              <option value="医药生物扩充">医药生物扩充</option>
+              <option value="新能源车产业链">新能源车产业链</option>
+              <option value="消费白酒扩充">消费白酒扩充</option>
+              <option value="银行扩充2">银行扩充2</option>
+              <option value="地产链">地产链</option>
+              <option value="消费零售">消费零售</option>
+              <option value="军工扩充">军工扩充</option>
+              <option value="数字经济">数字经济</option>
+              <option value="稀有金属">稀有金属</option>
+              <option value="电子元器件">电子元器件</option>
+              <option value="通信设备">通信设备</option>
+              <option value="机械设备">机械设备</option>
+              <option value="纺织服装">纺织服装</option>
+              <option value="旅游酒店">旅游酒店</option>
+              <option value="教育">教育</option>
+              <option value="环保">环保</option>
+              <option value="传统能源">传统能源</option>
+              <option value="黄金珠宝">黄金珠宝</option>
+              <option value="游戏">游戏</option>
+              <option value="农化">农化</option>
+              <option value="水务">水务</option>
+              <option value="大金融">大金融</option>
+              <option value="基建交通">基建交通</option>
+              <option value="医药扩充2">医药扩充2</option>
+              <option value="智能制造">智能制造</option>
+              <option value="半导体材料">半导体材料</option>
+              <option value="消费升级">消费升级</option>
+              <option value="新材料">新材料</option>
+              <option value="零售电商">零售电商</option>
+            </select>
+          </div>
+          <div class="form-group"><label>结果数量上限</label>
+            <select id="filter-topn">
+              <option value="5">5 个</option>
+              <option value="10" selected>10 个</option>
+              <option value="20">20 个</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row cols-2" style="margin-bottom:16px">
+          <div class="form-group"><label>综合评分及格线 <span id="filter-min-val" style="color:var(--purple);font-weight:700">65</span></label>
+            <div class="slider-wrap"><input type="range" min="50" max="90" value="65" oninput="document.getElementById('filter-min-val').textContent=this.value"><span class="slider-val">65</span></div>
+          </div>
+          <div class="form-group"><label>市值范围（亿元）</label>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input id="filter-min-mv" placeholder="最小（如 300）" style="flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:14px;outline:none;background:var(--bg2)">
+              <span style="color:var(--muted);flex-shrink:0">—</span>
+              <input id="filter-max-mv" placeholder="最大（如 5000）" style="flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:14px;outline:none;background:var(--bg2)">
+            </div>
+          </div>
+        </div>
+        <div class="form-row cols-2" style="margin-bottom:20px">
+          <div class="form-group"><label>当日涨跌幅范围（%）</label>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input id="filter-min-chg" placeholder="最小（如 -5）" style="flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:14px;outline:none;background:var(--bg2)">
+              <span style="color:var(--muted);flex-shrink:0">—</span>
+              <input id="filter-max-chg" placeholder="最大（如 5）" style="flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:14px;outline:none;background:var(--bg2)">
+            </div>
+          </div>
+          <div class="form-group"><label>成交量筛选</label>
+            <select id="filter-volume">
+              <option value="">不限</option>
+              <option value="1">放量（>均量 1 倍）</option>
+              <option value="2">大幅放量（>均量 2 倍）</option>
+              <option value="0.5">缩量（<均量 0.5 倍）</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn-primary" onclick="runFilter()" id="filter-btn">🔍 执行筛选</button>
+      </div>
+      <div id="filter-loading" style="display:none" class="func-card">
+        <div class="loading"><div class="spinner"></div>正在分析板块数据…</div>
+      </div>
+      <div id="filter-result" style="display:none" class="func-card">
+        <h3>筛选结果</h3>
+        <div id="filter-list"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     LOGIN MODAL
+════════════════════════════════════════════ -->
+<div class="modal-overlay" id="authModal" onclick="closeModalOnBg(event)">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal()">✕</button>
+    <div class="modal-logo">
+      <div class="m-icon">A</div>
+      <div class="modal-title">Welcome to AlphaStock</div>
+      <div class="modal-sub">智能投研助手 · 登录后开始使用</div>
+    </div>
+    <div class="oauth-row">
+
+      <div id="g_signin_btn" style="display:flex;justify-content:center;width:280px;min-height:44px;"></div>
+      <div style="display:flex;justify-content:center;">
+        <button class="oauth-btn" onclick="alert('微信/QQ 登录开发中 🔧')">
+          <span style="font-size:18px">💬</span> WeChat / QQ
+        </button>
+      </div>
+
+    </div>
+    <div class="m-divider">或使用账号密码</div>
+    <div class="m-tabs">
+      <div class="m-tab active" onclick="switchTab('login')">安全登录</div>
+      <div class="m-tab" onclick="switchTab('register')">注册账号</div>
+    </div>
+    <div class="m-panel active" id="panel-login">
+      <div class="m-group"><label class="m-label">用户名</label><input class="m-input" id="m-username" placeholder="输入用户名" autocomplete="off"></div>
+      <div class="m-group">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px">
+          <label class="m-label" style="margin:0">密码</label>
+          <span onclick="showForgot()" style="font-size:12px;color:var(--purple);cursor:pointer;font-weight:600">忘记密码？</span>
+        </div>
+        <input class="m-input" id="m-password" type="password" placeholder="输入密码" autocomplete="new-password">
+      </div>
+      <div class="m-error" id="login-error"></div>
+      <button class="m-submit" onclick="doLogin()">登录</button>
+    </div>
+    <!-- 忘记密码面板 -->
+    <div class="m-panel" id="panel-forgot">
+      <p style="font-size:14px;color:var(--slate);margin-bottom:20px;line-height:1.6">
+        输入注册邮箱，我们将发送重置密码链接（功能开发中，请联系管理员：<a href="mailto:yulingyu08@gmail.com" style="color:var(--purple)">yulingyu08@gmail.com</a>）
+      </p>
+      <div class="m-group"><label class="m-label">注册邮箱</label><input class="m-input" id="forgot-email" placeholder="your@email.com" type="email"></div>
+      <div class="m-error" id="forgot-error"></div>
+      <button class="m-submit" onclick="doForgot()">发送重置链接</button>
+      <p style="text-align:center;margin-top:14px;font-size:13px;color:var(--muted)">
+        <span onclick="showLogin()" style="color:var(--purple);cursor:pointer;font-weight:600">← 返回登录</span>
+      </p>
+    </div>
+    <div class="m-panel" id="panel-register">
+      <div class="m-group"><label class="m-label">用户名</label><input class="m-input" id="r-username" placeholder="设置用户名（4-20位）" autocomplete="off"></div>
+      <div class="m-group"><label class="m-label">密码</label><input class="m-input" id="r-password" type="password" placeholder="至少8位，含大小写和数字" autocomplete="new-password" oninput="checkPw()">
+        <div class="pw-grid" id="pw-grid" style="display:none">
+          <div class="pw-item" id="pw-len">○ 8位以上</div>
+          <div class="pw-item" id="pw-lower">○ 包含小写</div>
+          <div class="pw-item" id="pw-upper">○ 包含大写</div>
+          <div class="pw-item" id="pw-num">○ 包含数字</div>
+        </div>
+      </div>
+      <div class="m-error" id="reg-error"></div>
+      <button class="m-submit" onclick="doRegister()">注册并进入</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     JS
+════════════════════════════════════════════ -->
+<script>
+const API = 'https://alphastock.cloud/api/v1';
+const APP = 'https://alphastock.cloud/app/';
+let pendingPage = null;
+let scanN = 10;
+
+const SECTORS = {
+  '造船': {'600150':'中国船舶','601989':'中国重工'},
+  'CPO光模块': {'300308':'中际旭创','002281':'光迅科技'},
+  'AI算力': {'002261':'拓维信息','688041':'海光信息'},
+  '半导体': {'603501':'韦尔股份','002371':'北方华创'},
+  '军工': {'600760':'中航沈飞','000768':'中航西飞'},
+  '新能源': {'300750':'宁德时代','002594':'比亚迪'},
+  '有色金属': {'601899':'紫金矿业','600362':'江西铜业'},
+  '煤炭能源': {'601088':'中国神华','601898':'中煤能源'},
+};
+
+// ── 页面切换 ──
+function showPage(id) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById('page-' + id).classList.add('active');
+  window.scrollTo(0,0);
+}
+
+function showFuncPage(id) {
+  if (!checkAuth()) return;
+  showPage(id);
+}
+
+// ── 跳转 Streamlit ──
+function goToApp(page) {
+  if (!checkAuth()) { pendingPage = page; return; }
+  const token = localStorage.getItem('token');
+  const username = localStorage.getItem('username');
+  const target = page ? `${APP}${page}` : APP;
+  window.location.href = `${target}?token=${token}&username=${encodeURIComponent(username)}`;
+}
+
+// ── 鉴权检查 ──
+function checkAuth() {
+  if (localStorage.getItem('token')) return true;
+  openModal('login');
+  return false;
+}
+
+// ── 滚动锚点 ──
+function scrollToSection(e, id) {
+  if (e) e.preventDefault();
+  showPage('home');
+  setTimeout(() => {
+    const el = document.getElementById(id);
+    if (el) el.scrollIntoView({ behavior: 'smooth' });
+  }, 50);
+}
+
+// ── 登录状态 ──
+window.addEventListener('load', () => {
+  // 处理 logout / switch 参数
+  const urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.get('logout') === '1' || urlParams.get('switch') === '1') {
+    localStorage.removeItem('token');
+    localStorage.removeItem('username');
+    window.history.replaceState({}, '', '/');
+    // switch=1 时弹出登录框
+    if (urlParams.get('switch') === '1') {
+      setTimeout(() => openModal('login'), 300);
+    }
+  }
+  // 处理 Google OAuth 回调
+  if (urlParams.get('google_login') === 'success') {
+    const token    = urlParams.get('token');
+    const username = urlParams.get('username');
+    if (token && username) {
+      localStorage.setItem('token', token);
+      localStorage.setItem('username', username);
+      updateNavLoggedIn(username);
+      // 清掉 URL 参数
+      window.history.replaceState({}, '', '/');
+    }
+  } else if (urlParams.get('login_error')) {
+    alert('Google 登录失败：' + urlParams.get('login_error'));
+    window.history.replaceState({}, '', '/');
+  } else {
+    // 普通页面加载，检查本地登录状态
+    const token    = localStorage.getItem('token');
+    const username = localStorage.getItem('username');
+    if (token && username) updateNavLoggedIn(username);
+  }
+});
+
+function updateNavLoggedIn(username) {
+  document.getElementById('navActions').innerHTML = `
+    <span style="font-size:14px;font-weight:600;color:var(--slate)">👤 ${username}</span>
+    <button class="btn-start" onclick="goToApp('chat')" style="padding:10px 20px">进入 AI</button>
+    <button class="btn-login" onclick="doLogout()" style="color:#dc2626">退出</button>
+  `;
+}
+
+function doLogout() {
+  localStorage.removeItem('token');
+  localStorage.removeItem('username');
+  location.reload();
+}
+
+// ── Modal ──
+function openModal(tab='login') {
+  if (localStorage.getItem('token')) {
+    if (pendingPage) { const p = pendingPage; pendingPage = null; showFuncPage(p); }
+    return;
+  }
+  document.getElementById('authModal').classList.add('open');
+  switchTab(tab || 'login');
+}
+function closeModal() {
+  ['m-username','m-password','r-username','r-password'].forEach(id => {
+    const el = document.getElementById(id); if(el) el.value = '';
+  });
+  document.getElementById('login-error').classList.remove('show');
+  document.getElementById('reg-error').classList.remove('show');
+  document.getElementById('pw-grid').style.display = 'none';
+  document.getElementById('authModal').classList.remove('open');
+}
+function closeModalOnBg(e) { if (e.target.id === 'authModal') closeModal(); }
+function switchTab(tab) {
+  document.querySelectorAll('.m-tab').forEach((t,i) => t.classList.toggle('active', (i===0&&tab==='login')||(i===1&&tab==='register')));
+  document.getElementById('panel-login').classList.toggle('active', tab==='login');
+  document.getElementById('panel-register').classList.toggle('active', tab==='register');
+}
+
+// ── 登录 ──
+async function doLogin() {
+  const u = document.getElementById('m-username').value.trim();
+  const p = document.getElementById('m-password').value;
+  const errEl = document.getElementById('login-error');
+  errEl.classList.remove('show');
+  if (!u || !p) { showErr(errEl,'请输入用户名和密码'); return; }
+  try {
+    const r = await fetch(`${API}/auth/login`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username:u, password:p}) });
+    const d = await r.json();
+    if (r.ok) {
+      localStorage.setItem('token', d.token);
+      localStorage.setItem('username', d.username);
+      closeModal();
+      updateNavLoggedIn(d.username);
+      pendingPage = null; // 登录成功留在落地页
+    } else { showErr(errEl, d.detail || '登录失败'); }
+  } catch(e) { showErr(errEl,'连接失败，请检查网络'); }
+}
+
+// ── 注册 ──
+async function doRegister() {
+  const u = document.getElementById('r-username').value.trim();
+  const p = document.getElementById('r-password').value;
+  const errEl = document.getElementById('reg-error');
+  errEl.classList.remove('show');
+  if (!u || !p) { showErr(errEl,'请填写完整信息'); return; }
+  if (p.length < 8) { showErr(errEl,'密码至少8位'); return; }
+  try {
+    const r = await fetch(`${API}/auth/register`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username:u, password:p}) });
+    const d = await r.json();
+    if (r.ok) {
+      localStorage.setItem('token', d.token);
+      localStorage.setItem('username', d.username);
+      closeModal();
+      updateNavLoggedIn(d.username);
+      if (pendingPage) {
+        const pg = pendingPage; pendingPage = null;
+        if (pg === 'chat') goToApp('chat'); else showFuncPage(pg);
+      }
+    } else { showErr(errEl, d.detail || '注册失败'); }
+  } catch(e) { showErr(errEl,'连接失败，请检查网络'); }
+}
+
+// ── 密码强度 ──
+function checkPw() {
+  const p = document.getElementById('r-password').value;
+  document.getElementById('pw-grid').style.display = p ? 'grid' : 'none';
+  setCheck('pw-len', p.length>=8, '8位以上');
+  setCheck('pw-lower', /[a-z]/.test(p), '包含小写');
+  setCheck('pw-upper', /[A-Z]/.test(p), '包含大写');
+  setCheck('pw-num', /\d/.test(p), '包含数字');
+}
+function setCheck(id, ok, label) {
+  const el = document.getElementById(id);
+  el.textContent = (ok?'✓ ':'○ ') + label;
+  el.classList.toggle('ok', ok);
+}
+
+// ── 联系表单 ──
+function sendContact() {
+  const name = document.getElementById('cf-name').value.trim();
+  const email = document.getElementById('cf-email').value.trim();
+  const msg = document.getElementById('cf-msg').value.trim();
+  if (!name || !email || !msg) { alert('请填写完整信息'); return; }
+  window.location.href = `mailto:yulingyu08@gmail.com?subject=AlphaStock 反馈 - ${name}&body=${encodeURIComponent(msg+'\n\n来自: '+email)}`;
+  document.getElementById('cf-success').style.display = 'block';
+}
+
+function initGoogleLogin() {
+  if (typeof google === 'undefined') return;
+  // 只用 OAuth2 popup，完全不启用 One Tap
+  google.accounts.oauth2 && google.accounts.id.cancel && google.accounts.id.cancel();
+  google.accounts.id.initialize({
+    client_id: '322349106189-a3tjujsd4guheppbl2uh8cv5nnbgbdu0.apps.googleusercontent.com',
+    callback: handleGoogleLogin,
+    ux_mode: 'popup',
+    auto_select: false,
+    cancel_on_tap_outside: true,
+    itp_support: true,
+  });
+  const btn = document.getElementById('g_signin_btn');
+  if (btn) {
+    google.accounts.id.renderButton(btn, {
+      theme: 'outline',
+      size: 'large',
+      width: 280,
+      text: 'signin_with',
+      shape: 'rectangular',
+      logo_alignment: 'left',
+    });
+  }
+}
+window.onGoogleLibraryLoad = initGoogleLogin;
+
+async function handleGoogleLogin(response) {
+  try {
+    // 直接解析 JWT payload（不验签，Demo 项目可用）
+    const idToken = response.credential;
+    const b64 = idToken.split('.')[1].replace(/-/g,'+').replace(/_/g,'/');
+    const payload = JSON.parse(atob(b64.padEnd(b64.length + (4 - b64.length % 4) % 4, '=')));
+    const email   = payload.email || '';
+    const name    = payload.name  || email.split('@')[0];
+    const googleId = payload.sub  || '';
+
+    // 调自己后端用 email 注册/登录
+    const r = await fetch(`${API}/auth/google/token`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id_token: idToken, email, name, google_id: googleId})
+    });
+    const d = await r.json();
+    if (r.ok) {
+      localStorage.setItem('token', d.token);
+      localStorage.setItem('username', d.display_name || d.username);
+      closeModal();
+      updateNavLoggedIn(d.display_name || d.username);
+    } else {
+      alert('Google 登录失败：' + (d.detail || '未知错误'));
+    }
+  } catch(e) {
+    alert('处理失败：' + e.message);
+  }
+}
+
+function showForgot() {
+  document.getElementById('panel-login').classList.remove('active');
+  document.getElementById('panel-forgot').classList.add('active');
+  document.querySelectorAll('.m-tab').forEach(t => t.style.display = 'none');
+}
+function showLogin() {
+  document.getElementById('panel-forgot').classList.remove('active');
+  document.getElementById('panel-login').classList.add('active');
+  document.querySelectorAll('.m-tab').forEach(t => t.style.display = '');
+}
+async function doForgot() {
+  const email = document.getElementById('forgot-email').value.trim();
+  const errEl = document.getElementById('forgot-error');
+  errEl.classList.remove('show');
+  if (!email) { showErr(errEl, '请输入邮箱'); return; }
+  // 目前跳转邮件（后端接好后改为 fetch）
+  window.location.href = `mailto:yulingyu08@gmail.com?subject=AlphaStock 密码重置请求&body=用户邮箱: ${email}%0A请帮我重置密码`;
+  errEl.textContent = '已打开邮件客户端，请发送邮件给管理员';
+  errEl.style.color = '#16a34a';
+  errEl.classList.add('show');
+}
+function showErr(el, msg) { el.textContent = msg; el.classList.add('show'); }
+document.addEventListener('keydown', e => { if (e.key==='Escape') closeModal(); });
+document.getElementById('m-password').addEventListener('keydown', e => { if(e.key==='Enter') doLogin(); });
+
+// ══ API CALLS ══
+
+// ── 量化回测 ──
+let btChart = null;
+async function runBacktest() {
+  const token = localStorage.getItem('token');
+  const btn = document.getElementById('bt-btn');
+  btn.disabled = true; btn.textContent = '运行中…';
+  document.getElementById('bt-loading').style.display = 'block';
+  document.getElementById('bt-result').style.display = 'none';
+  try {
+    const r = await fetch(`${API}/backtest`, {
+      method:'POST', headers:{'Content-Type':'application/json','X-Auth-Token':token,'Authorization':`Bearer ${token}`},
+      body: JSON.stringify({
+        stock_code: document.getElementById('bt-code').value,
+        strategy: document.getElementById('bt-strat').value,
+        start_date: document.getElementById('bt-start').value,
+        end_date: document.getElementById('bt-end').value,
+        initial_cash: 100000, token
+      })
+    });
+    const d = await r.json();
+    if (r.ok) {
+      // 指标卡片
+      document.getElementById('bt-metrics').innerHTML = [
+        ['总收益', (d.total_return>=0?'+':'')+d.total_return.toFixed(2)+'%', d.total_return>=0],
+        ['夏普比率', d.sharpe, null],
+        ['最大回撤', '-'+d.max_drawdown.toFixed(2)+'%', false],
+        ['交易次数', d.trade_count, null],
+        ['胜率', d.win_rate+'%', null],
+      ].map(([l,v,up])=>`<div class="result-metric"><div class="result-metric val ${up===true?'up':up===false?'down':''}" style="font-size:22px;font-weight:800;color:${up===true?'#16a34a':up===false?'#dc2626':'var(--ink)'}">${v}</div><div class="lbl" style="font-size:12px;color:var(--muted);margin-top:4px">${l}</div></div>`).join('');
+
+      // 收益曲线
+      const chartBox = document.getElementById('bt-chart');
+      chartBox.innerHTML = '<canvas id="btCanvas" style="width:100%;height:100%"></canvas>';
+      if (btChart) btChart.destroy();
+
+      if (d.returns_data && d.dates_data && d.returns_data.length > 0) {
+        // 转成累计收益率
+        let cum = 1;
+        const cumReturns = d.returns_data.map(r => {
+          cum *= (1 + r);
+          return +((cum - 1) * 100).toFixed(3);
+        });
+        // 每隔N点取一个，避免数据太密
+        const step = Math.max(1, Math.floor(cumReturns.length / 200));
+        const labels = d.dates_data.filter((_,i)=>i%step===0);
+        const data   = cumReturns.filter((_,i)=>i%step===0);
+        const ctx = document.getElementById('btCanvas').getContext('2d');
+        const isPositive = data[data.length-1] >= 0;
+        btChart = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels,
+            datasets: [{
+              data,
+              borderColor: isPositive ? '#16a34a' : '#dc2626',
+              backgroundColor: isPositive ? 'rgba(22,163,74,0.08)' : 'rgba(220,38,38,0.08)',
+              borderWidth: 2,
+              pointRadius: 0,
+              fill: true,
+              tension: 0.3,
+            }]
+          },
+          options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false }, tooltip: {
+              callbacks: { label: ctx => `收益率: ${ctx.raw.toFixed(2)}%` }
+            }},
+            scales: {
+              x: { ticks: { maxTicksLimit: 8, font:{size:11} }, grid:{display:false} },
+              y: { ticks: { callback: v => v+'%', font:{size:11} }, grid:{color:'#f1f5f9'} }
+            }
+          }
+        });
+      }
+      document.getElementById('bt-result').style.display = 'block';
+    } else { alert(d.detail || '回测失败'); }
+  } catch(e) { alert('连接失败：'+e.message); }
+  document.getElementById('bt-loading').style.display = 'none';
+  btn.disabled = false; btn.textContent = '🚀 启动回测';
+}
+
+// ── Alpha 选股 ──
+async function runAlpha() {
+  const token = localStorage.getItem('token');
+  const btn = document.getElementById('alpha-btn');
+  btn.disabled = true; btn.textContent = '筛选中…';
+  document.getElementById('alpha-loading').style.display = 'block';
+  document.getElementById('alpha-result').style.display = 'none';
+  const minScore = parseInt(document.getElementById('alpha-min-val').textContent||60);
+  const sector = document.getElementById('alpha-sector').value;
+  try {
+    const r = await fetch(`${API}/alpha/score`, {
+      method:'POST', headers:{'Content-Type':'application/json','X-Auth-Token':token,'Authorization':`Bearer ${token}`},
+      body: JSON.stringify({ min_score: minScore, top_n: 15, sector: sector||undefined, token })
+    });
+    const d = await r.json();
+    if (r.ok) {
+      const results = d.results || [];
+      document.getElementById('alpha-list').innerHTML = results.length
+        ? results.map(x=>`
+          <div class="stock-result-card">
+            <div><div class="stock-result-name">${x.stock_name}</div><div class="stock-result-code">${x.stock_code}</div></div>
+            <div style="display:flex;align-items:center;gap:16px">
+              <div style="width:140px">
+                <div class="score-bar-label"><span style="font-size:12px;color:var(--muted)">综合评分</span><span style="font-weight:700;color:var(--purple)">${x.total_score}</span></div>
+                <div class="score-bar"><div class="score-bar-fill" style="width:${x.total_score}%"></div></div>
+              </div>
+              <span class="badge ${x.total_score>=75?'badge-buy':x.total_score>=60?'badge-hold':'badge-sell'}">${x.rating}</span>
+            </div>
+          </div>`).join('')
+        : '<div class="empty-state"><div class="empty-icon">🔍</div><p>暂无符合条件的标的</p></div>';
+      document.getElementById('alpha-result').style.display = 'block';
+    } else { alert(d.detail || '筛选失败：' + JSON.stringify(d)); }
+  } catch(e) { alert('连接失败：'+e.message); }
+  document.getElementById('alpha-loading').style.display = 'none';
+  btn.disabled = false; btn.textContent = '⚡ 开始筛选';
+}
+
+// ── 今日买点 ──
+async function runScan() {
+  const token = localStorage.getItem('token');
+  const btn = document.getElementById('scan-btn');
+  btn.disabled = true; btn.textContent = '扫描中…';
+  document.getElementById('scan-loading').style.display = 'block';
+  document.getElementById('scan-result').style.display = 'none';
+  try {
+    const r = await fetch(`${API}/scan/today`, {
+      method:'POST', headers:{'Content-Type':'application/json','X-Auth-Token':token,'Authorization':`Bearer ${token}`},
+      body: JSON.stringify({ base_start: document.getElementById('scan-start').value, top_n: parseInt(scanN), strategy: document.getElementById('scan-strategy').value, token })
+    });
+    const d = await r.json();
+    if (r.ok) {
+      const recs = d.recommendations || [];
+      document.getElementById('scan-list').innerHTML = recs.length
+        ? recs.map(x=>`
+          <div class="stock-result-card" style="flex-direction:column;align-items:flex-start;gap:10px">
+            <div style="display:flex;justify-content:space-between;width:100%;align-items:center">
+              <div><div class="stock-result-name">${x.name} (${x.code})</div><div class="stock-result-code">触发日价格：¥${x.close}</div></div>
+              <span class="badge ${x.confidence==='高'?'badge-buy':'badge-hold'}">${x.confidence}置信度</span>
+            </div>
+            <div style="font-size:13px;color:var(--slate);line-height:1.6">${x.decision}</div>
+          </div>`).join('')
+        : '<div class="empty-state"><div class="empty-icon">📡</div><p>暂无触发信号</p></div>';
+      document.getElementById('scan-result').style.display = 'block';
+    } else { alert(d.detail || '扫描失败'); }
+  } catch(e) { alert('连接失败：'+e.message); }
+  document.getElementById('scan-loading').style.display = 'none';
+  btn.disabled = false; btn.textContent = '📡 发射扫描';
+}
+
+// ── 板块筛选 ──
+async function runFilter() {
+  const token = localStorage.getItem('token');
+  const btn = document.getElementById('filter-btn');
+  btn.disabled = true; btn.textContent = '筛选中…';
+  document.getElementById('filter-loading').style.display = 'block';
+  document.getElementById('filter-result').style.display = 'none';
+  const sector   = document.getElementById('filter-sector').value;
+  const minScore = parseInt(document.getElementById('filter-min-val').textContent||65);
+  const topN     = parseInt(document.getElementById('filter-topn').value||10);
+  try {
+    const r = await fetch(`${API}/backtest/filter`, {
+      method:'POST', headers:{'Content-Type':'application/json','X-Auth-Token':token,'Authorization':`Bearer ${token}`},
+      body: JSON.stringify({ sector, min_score: minScore, top_n: topN, token })
+    });
+    const d = await r.json();
+    if (r.ok) {
+      let results = d.results || [];
+
+      // 前端额外过滤（后端暂不支持这些字段时做 UI 层过滤）
+      const minMv   = parseFloat(document.getElementById('filter-min-mv').value)||0;
+      const maxMv   = parseFloat(document.getElementById('filter-max-mv').value)||99999;
+      const minChg  = parseFloat(document.getElementById('filter-min-chg').value)||-99;
+      const maxChg  = parseFloat(document.getElementById('filter-max-chg').value)||99;
+
+      // 如果后端返回了 market_cap / change_pct 字段则过滤，否则展示全部
+      results = results.filter(x => {
+        if (x.market_cap !== undefined) {
+          const mv = x.market_cap / 1e8; // 转亿
+          if (mv < minMv || mv > maxMv) return false;
+        }
+        if (x.change_pct !== undefined) {
+          if (x.change_pct < minChg || x.change_pct > maxChg) return false;
+        }
+        return true;
+      });
+
+      document.getElementById('filter-list').innerHTML = results.length
+        ? results.map(x=>`
+          <div class="stock-result-card">
+            <div style="flex:1">
+              <div class="stock-result-name">${x.name}</div>
+              <div class="stock-result-code" style="display:flex;gap:16px;margin-top:4px;flex-wrap:wrap">
+                <span>${x.code}</span>
+                ${x.pe  ? `<span>PE: ${x.pe.toFixed(1)}</span>` : ''}
+                ${x.roe ? `<span>ROE: ${x.roe.toFixed(1)}%</span>` : ''}
+                ${x.market_cap ? `<span>市值: ${(x.market_cap/1e8).toFixed(0)}亿</span>` : ''}
+                ${x.change_pct !== undefined ? `<span style="color:${x.change_pct>=0?'#16a34a':'#dc2626'}">${x.change_pct>=0?'+':''}${x.change_pct.toFixed(2)}%</span>` : ''}
+                ${x.volume ? `<span>量: ${(x.volume/1e4).toFixed(0)}万手</span>` : ''}
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:12px">
+              <div style="width:120px">
+                <div class="score-bar-label"><span style="font-size:12px;color:var(--muted)">综合分</span><span style="font-weight:700;color:var(--purple)">${x.score}</span></div>
+                <div class="score-bar"><div class="score-bar-fill" style="width:${x.score}%"></div></div>
+              </div>
+            </div>
+          </div>`).join('')
+        : '<div class="empty-state"><div class="empty-icon">🔍</div><p>暂无达到评级的标的</p></div>';
+      document.getElementById('filter-result').style.display = 'block';
+    } else { alert(d.detail || '筛选失败'); }
+  } catch(e) { alert('连接失败：'+e.message); }
+  document.getElementById('filter-loading').style.display = 'none';
+  btn.disabled = false; btn.textContent = '🔍 执行筛选';
+}
+</script>
+</body>
+</html>

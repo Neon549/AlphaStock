@@ -389,6 +389,7 @@ class InvestmentRuntime:
                     doc_context=doc_context,
                     document_citations=citations,
                     session_id=event.session_id,
+                    actor_id=event.actor_id,
                     analysis_query=query,
                     analyst_focus=parsed.get("analyst_focus") or "all",
                     memory_context=memory_context,
@@ -405,12 +406,17 @@ class InvestmentRuntime:
                         "user_doc_context": doc_context,
                         "document_citations": citations,
                         "session_id": event.session_id,
+                        "actor_id": event.actor_id,
                         "analysis_query": query,
                         "analyst_focus": parsed.get("analyst_focus") or "all",
                         "memory_context": memory_context,
                         "agent_context": window.text,
                         "model_profile": model_profile,
                         "task_plan": task_plan,
+                        # This is correlation metadata only.  The unified
+                        # Harness writes its own namespaced checkpoint and
+                        # never changes the existing agent-runs schema.
+                        "_harness_run_id": run_id,
                     })
                 route = "investment_agent_loop"
         except Exception as exc:

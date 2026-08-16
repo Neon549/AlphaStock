@@ -156,7 +156,7 @@ def researcher_node(state: dict[str, Any]) -> dict[str, Any]:
     from agent_runtime.agents.research_harness import run_research_harness
     from agent_runtime.evidence.cards import build_evidence_cards
 
-    result = run_research_harness(stock_code=state["stock_code"], snapshot=state.get("context_snapshot") or {}, session_id=state.get("session_id"), request_query=state.get("analysis_query") or state["stock_code"], runtime_context=state.get("agent_context") or "", granted_permissions={"document:read", "market:read", "memory:read"})
+    result = run_research_harness(stock_code=state["stock_code"], snapshot=state.get("context_snapshot") or {}, session_id=state.get("session_id"), request_query=state.get("analysis_query") or state["stock_code"], runtime_context=state.get("agent_context") or "", actor_id=state.get("actor_id"), granted_permissions={"document:read", "market:read", "memory:read"})
     observations = result["observations"]
     return {
         "bull_argument": result["report"], "bear_argument": result["report"],

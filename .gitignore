@@ -24,3 +24,9 @@ evaluation/corpus/downloads/
 
 # Local-only installation artifacts
 requirements_full.txt
+
+# Frontend build and local environment artifacts
+frontend/react-app/node_modules/
+frontend/react-app/dist/
+frontend/react-app/.env
+frontend/react-app/.env.*

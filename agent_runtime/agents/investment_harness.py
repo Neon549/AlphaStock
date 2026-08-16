@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextvars
+import hashlib
 import json
 import re
 import time
@@ -18,12 +19,10 @@ from typing import Any, Callable
 from agent_runtime.context.compaction import compact_tool_observations, persist_tool_result
 from agent_runtime.context.snapshot import build_context_snapshot
 from agent_runtime.evidence.cards import build_evidence_cards
+from agent_runtime.harness import Harness, INVESTMENT, default_harness
 from agent_runtime.reliability import (
-    DEFAULT_TOOL_CACHE,
-    RetryBudget,
     classify_model_failure,
     classify_tool_failure,
-    invoke_with_failure_policy,
 )
 from agent_runtime.agents.subagents import (
     EphemeralSubagentFactory,
@@ -44,40 +43,14 @@ from agent_runtime.workflows.investment_handlers import (
 )
 
 
-MAX_AGENT_STEPS = 4
+MAX_AGENT_STEPS = INVESTMENT.max_steps
 MAX_OBSERVATION_CHARS = 1_800
 _JSON_OBJECT = re.compile(r"\{.*\}", re.S)
 _ALLOWED_FOCUSES = {"technical", "fundamental", "sentiment"}
 
 _SKILL_CATALOG = {
-    "analysis": {
-        "permission": "market:read",
-        "description": "Run one or more specialist analyses in parallel. Arguments: {focuses:[technical,fundamental,sentiment]}",
-    },
-    "document-rag": {
-        "permission": "document:read",
-        "description": "Search the current session's uploaded documents. Arguments: {query}",
-    },
-    "backtest": {
-        "permission": "backtest:run",
-        "description": "Run one bounded historical strategy backtest. Arguments: {strategy,start_date,end_date}",
-    },
-    "market-price": {
-        "permission": "market:read",
-        "description": "Retrieve a timestamped current market-price evidence record. No arguments needed.",
-    },
-    "market-history": {
-        "permission": "market:read",
-        "description": "Retrieve bounded daily K-line history as structured market evidence. No arguments needed.",
-    },
-    "financial-indicators": {
-        "permission": "market:read",
-        "description": "Retrieve timestamped financial indicators with reporting-period freshness. No arguments needed.",
-    },
-    "memory-search": {
-        "permission": "memory:read",
-        "description": "Search approved operational memory. It is guidance, never current market evidence. Arguments: {query}",
-    },
+    item.name: {"permission": item.permission, "description": item.description}
+    for item in INVESTMENT.tools
 }
 
 
@@ -397,6 +370,8 @@ def run_investment_agent_loop(
     subagent_executor: Callable[..., SubagentResult | dict[str, Any]] | None = None,
     subagent_registry_instance: SubagentRegistry | None = None,
     ephemeral_subagent_factory_instance: EphemeralSubagentFactory | None = None,
+    harness: Harness | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """Run a bounded parent loop with allowlisted Skills and specialist subagents."""
     if planner_llm is None or final_llm is None:
@@ -408,17 +383,30 @@ def run_investment_agent_loop(
     from agent_runtime.workflows.investment_handlers import policy_guard_node
 
     state = dict(state)
+    runtime = harness or default_harness()
+    run = runtime.open(
+        "investment",
+        {
+            "stock_code": str(state.get("stock_code") or ""),
+            "session_id": state.get("session_id"),
+            "actor_id": state.get("actor_id"),
+            "analyst_focus": str(state.get("analyst_focus") or "all"),
+            "request_sha256": hashlib.sha256(
+                str(state.get("analysis_query") or "").encode("utf-8")
+            ).hexdigest(),
+        },
+        run_id=run_id or state.get("_harness_run_id"),
+    )
+    state["harness"] = run.summary()
     state.update(policy_guard_node(state))
     if state.get("publish_status") == "blocked":
         state.update(abort_node(state))
+        run.abort(reason="policy_guard_blocked")
+        state["harness"] = run.summary()
         return state
 
     granted = {"document:read", "market:read", "backtest:run", "memory:read"}
-    available = [
-        {"name": name, "description": spec["description"]}
-        for name, spec in _SKILL_CATALOG.items()
-        if spec["permission"] in granted and (name != "document-rag" or state.get("session_id"))
-    ]
+    available = run.profile.available(granted, has_session_document=bool(state.get("session_id")))
     active_subagent_registry = subagent_registry_instance or subagent_registry
     active_ephemeral_factory = ephemeral_subagent_factory_instance or ephemeral_subagent_factory
     available_subagents = active_subagent_registry.list_available(
@@ -437,7 +425,7 @@ def run_investment_agent_loop(
     executed_subagents: set[str] = set()
     ephemeral_created = False
     executor = skill_executor or _execute_skill
-    retry_budget = RetryBudget()
+    retry_budget = run.retry_budget
     model_failures: list[dict[str, Any]] = []
     planner_unavailable = False
     task_plan = state.get("task_plan") if isinstance(state.get("task_plan"), dict) else {}
@@ -541,6 +529,7 @@ Previous observations: {json.dumps(compacted, ensure_ascii=False)}"""
             break
         if action["action"] == "final":
             trace.append({"step": step + 1, "event": "final", "reason": action.get("reason", "")})
+            run.record("planner_final", step=step + 1)
             break
 
         if action["action"] == "create_subagent":
@@ -608,6 +597,14 @@ Previous observations: {json.dumps(compacted, ensure_ascii=False)}"""
                     "instance_id": lifecycle["instance_id"],
                     "template": lifecycle["template"],
                 })
+                run.record(
+                    "subagent_finished",
+                    step=step + 1,
+                    subagent=str(result["subagent"]),
+                    result_ref=result_ref,
+                    ephemeral=True,
+                )
+                run.checkpoint("subagent_finished")
             except Exception as exc:
                 trace.append({
                     "step": step + 1,
@@ -615,6 +612,7 @@ Previous observations: {json.dumps(compacted, ensure_ascii=False)}"""
                     "template": template,
                     "error": str(exc)[:300],
                 })
+                run.record("subagent_error", step=step + 1, ephemeral=True, error_type=type(exc).__name__)
             continue
 
         if action["action"] == "subagents":
@@ -690,6 +688,14 @@ Previous observations: {json.dumps(compacted, ensure_ascii=False)}"""
                         "latency_ms": result["trace"].get("latency_ms"),
                         "result_ref": result_ref,
                     })
+                    run.record(
+                        "subagent_finished",
+                        step=step + 1,
+                        subagent=str(result["subagent"]),
+                        result_ref=result_ref,
+                        ephemeral=False,
+                    )
+                    run.checkpoint("subagent_finished")
                 if analysis_task_ids:
                     mark_tasks(analysis_task_ids, all(bool(item.get("ok")) for item in results))
             except Exception as exc:
@@ -701,12 +707,14 @@ Previous observations: {json.dumps(compacted, ensure_ascii=False)}"""
                     "subagents": names,
                     "error": str(exc)[:300],
                 })
+                run.record("subagent_error", step=step + 1, ephemeral=False, error_type=type(exc).__name__)
             continue
 
         skill_name = str(action.get("skill") or "")
-        spec = _SKILL_CATALOG.get(skill_name)
-        if not spec or skill_name not in {item["name"] for item in available}:
+        tool = run.profile.tool(skill_name)
+        if tool is None or skill_name not in {item["name"] for item in available}:
             trace.append({"step": step + 1, "event": "skill_denied", "skill": skill_name})
+            run.record("skill_denied", step=step + 1, skill=skill_name)
             break
         task_ids = ready_bound_tasks(skill_name)
         if bound_tasks(skill_name) and not task_ids:
@@ -724,33 +732,24 @@ Previous observations: {json.dumps(compacted, ensure_ascii=False)}"""
         executed.add(key)
 
         try:
-            # Capability checks stay in the harness rather than in the model:
-            # the planner can select only this static, read-only allowlist.
-            # Publishing and trading are intentionally absent from the catalog.
-            if spec["permission"] not in granted:
-                raise PermissionError(f"missing granted permission: {spec['permission']}")
             started = time.monotonic()
             arguments = dict(action.get("arguments") or {})
-            result = invoke_with_failure_policy(
-                skill_name,
-                lambda: executor(
+            result = run.tools.call(
+                run,
+                tool=tool,
+                granted=granted,
+                arguments=arguments,
+                cache_key=json.dumps([skill_name, state["stock_code"], arguments], ensure_ascii=False, sort_keys=True),
+                invoke=lambda: executor(
                     skill_name,
                     state=state,
                     arguments=arguments,
                     granted=granted,
                 ),
-                cache_key=json.dumps([skill_name, state["stock_code"], arguments], ensure_ascii=False, sort_keys=True),
-                retry_budget=retry_budget,
-                cache=DEFAULT_TOOL_CACHE,
-            )
-            state.update(result.get("updates") or {})
-            result_ref = persist_tool_result(
-                tool=skill_name,
-                content=str(result.get("content") or ""),
-                source_kind=result.get("source_kind", "evidence"),
-                citations=result.get("citations", []),
                 stock_code=str(state.get("stock_code") or ""),
             )
+            state.update(result.get("updates") or {})
+            result_ref = result["result_ref"]
             observation = {
                 "tool": skill_name,
                 "ok": bool(result.get("ok")),
@@ -801,17 +800,31 @@ Previous observations: {json.dumps(compacted, ensure_ascii=False)}"""
     # A malformed or overly conservative planner must not make the standard
     # analyse endpoint return an empty report. This is a safe, bounded fallback.
     if not planner_unavailable and not any(state.get(f"{focus}_report") for focus in _ALLOWED_FOCUSES):
-        fallback = _run_analysis_skill(
-            state, _normalise_focuses([], state.get("analyst_focus") or "all")
+        fallback_arguments = {
+            "focuses": _normalise_focuses([], state.get("analyst_focus") or "all"),
+            "fallback": True,
+        }
+        fallback = run.tools.call(
+            run,
+            tool=run.profile.tool("analysis"),
+            granted=granted,
+            arguments=fallback_arguments,
+            cache_key=json.dumps(
+                ["analysis-fallback", state["stock_code"], fallback_arguments],
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            invoke=lambda: _run_analysis_skill(state, fallback_arguments["focuses"]),
+            stock_code=str(state.get("stock_code") or ""),
         )
-        state.update(fallback["updates"])
+        state.update(fallback.get("updates") or {})
         observations.append({
             "tool": "analysis",
-            "ok": fallback["ok"],
-            "content": _trim(fallback["content"]),
-            "citations": [],
-            "source_kind": "analyst_report",
-            "result_ref": "runtime:fallback-analysis",
+            "ok": bool(fallback.get("ok")),
+            "content": _trim(fallback.get("content")),
+            "citations": fallback.get("citations", []),
+            "source_kind": fallback.get("source_kind", "analyst_report"),
+            "result_ref": fallback["result_ref"],
         })
         trace.append({"event": "fallback_analysis", "reason": "planner did not run analysis"})
         fallback_task_ids = ready_bound_tasks("analysis")
@@ -850,6 +863,8 @@ Previous observations: {json.dumps(compacted, ensure_ascii=False)}"""
     state.update(validation_node(state))
     if state.get("final_decision"):
         state.update(abort_node(state))
+        run.abort(reason="validation_blocked")
+        state["harness"] = run.summary()
         return state
     if state.get("replan_required"):
         state.update(replan_node(state))
@@ -865,6 +880,8 @@ Previous observations: {json.dumps(compacted, ensure_ascii=False)}"""
         state.update(validation_node(state))
         if state.get("final_decision"):
             state.update(abort_node(state))
+            run.abort(reason="validation_blocked_after_replan")
+            state["harness"] = run.summary()
             return state
 
     try:
@@ -881,6 +898,8 @@ Previous observations: {json.dumps(compacted, ensure_ascii=False)}"""
         state["final_decision"] = "[PUBLISH_BLOCKED] 模型服务不可用，未生成投资结论。"
         state.update(evaluate_output_gate(state))
         state["human_review_required"] = True
+        run.abort(reason="research_model_unavailable")
+        state["harness"] = run.summary()
         return state
     state.update({
         "bull_argument": report,
@@ -913,4 +932,6 @@ Previous observations: {json.dumps(compacted, ensure_ascii=False)}"""
             *(state.get("publish_reasons") or []),
             f"required task plan incomplete: {', '.join(incomplete)}",
         ]))
+    run.complete(reason="investment_analysis_finished")
+    state["harness"] = run.summary()
     return state

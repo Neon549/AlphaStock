@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from agent_runtime.agents.research_harness import _default_executor, _market_metadata, run_research_harness
+from agent_runtime.harness import Harness, MemoryStore
 
 
 class _Response:
@@ -64,6 +65,21 @@ class ResearchHarnessTests(unittest.TestCase):
         self.assertTrue(result["trace"][0]["result_ref"].startswith("runtime:tool-result:market-price:"))
         self.assertEqual(result["trace"][1]["event"], "final")
         self.assertIn("stance", result["report"])
+
+    def test_legacy_entry_point_writes_a_profile_bound_durable_session(self):
+        store = MemoryStore()
+        result = run_research_harness(
+            stock_code="600519",
+            snapshot={},
+            planner_llm=_SequenceLlm(['{"action":"final","reason":"no extra evidence"}']),
+            final_llm=_SequenceLlm(["safe final"]),
+            harness=Harness(store=store),
+            run_id="legacy-research",
+        )
+
+        self.assertEqual(result["harness"]["profile"], "research")
+        self.assertEqual(result["harness"]["status"], "completed")
+        self.assertEqual(store.load("legacy-research").status.value, "completed")
 
     def test_harness_refuses_unregistered_tools(self):
         planner = _SequenceLlm(['{"action":"tool","tool":"shell","arguments":{}}'])

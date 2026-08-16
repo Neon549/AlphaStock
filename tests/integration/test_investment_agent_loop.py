@@ -114,6 +114,8 @@ class InvestmentAgentLoopTests(unittest.TestCase):
         self.assertFalse(result["evidence_gate"]["passed"])
         self.assertEqual(result["agent_trace"][0]["event"], "skill_result")
         self.assertIn("neutral stance", result["bull_argument"])
+        self.assertEqual(result["harness"]["profile"], "investment")
+        self.assertEqual(result["harness"]["status"], "completed")
 
     def test_loop_creates_and_destroys_one_ephemeral_evidence_reviewer(self):
         planner = _SequenceLlm([
