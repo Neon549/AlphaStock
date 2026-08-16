@@ -1,320 +1,290 @@
-# AlphaStock · A-Share Intelligent Research Assistant
+# AlphaStock
 
-> Evidence-governed A-share research assistant combining fundamental, technical, sentiment and backtest workflows. It produces reviewable research drafts; it does not submit broker orders or provide automated investment execution.
+[![Backend CI](https://github.com/Neon549/Alpha_stock/actions/workflows/deploy.yml/badge.svg?branch=main)](https://github.com/Neon549/Alpha_stock/actions/workflows/deploy.yml)
+[![Frontend CI](https://github.com/Neon549/Alpha_stock/actions/workflows/deploy-frontend.yml/badge.svg?branch=main)](https://github.com/Neon549/Alpha_stock/actions/workflows/deploy-frontend.yml)
+[![Python 3.11](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Node 20](https://img.shields.io/badge/Node.js-20-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 
-🌐 **Live Demo**: [alphastock.cloud](https://alphastock.cloud) · 📦 **Source**: [Neon549/Alpha_stock](https://github.com/Neon549/Alpha_stock)
+> An evidence-governed A-share research assistant. AlphaStock combines market evidence, document and news RAG, historical backtesting, and human publication controls into one auditable product. It produces research drafts and strategy suggestions; it does **not** connect to brokers or place orders.
 
----
+**[Live demo](https://alphastock.cloud)** · **[API docs](https://alphastock.cloud/docs)** · **[Evaluation guide](evaluation/README.md)** · **[Harness design](agent_runtime/harness/README.md)** · **[Remote MCP guide](MCP_REMOTE.md)**
 
-## What It Does
+## Why AlphaStock
 
-| Feature | Description |
-|---|---|
-| **Stock Analysis** | Input a ticker — fundamental / technical / sentiment research paths produce an evidence-linked draft, risk notes and a human-review boundary |
-| **Quantitative Backtest** | KDJ+MACD / RSI / Bollinger Band strategies with grid-search parameter optimization (36 combinations); outputs Sharpe ratio, max drawdown, win rate |
-| **News Sentiment** | Stock-scoped A-share news retrieval via BM25 + pgvector + RRF, with entity verification and a BGE Cross-Encoder rerank safety fallback |
-| **Buy Signal Screener** | Market-universe scan for configured technical signals and factor scores; results are research candidates, not orders or return guarantees |
-| **Multimodal Input** | Chart image analysis via Qwen-VL-Plus |
+Investment research assistants should be able to say *what evidence was used*, *how fresh it is*, and *why a draft was blocked*. AlphaStock is built around that requirement:
 
----
+- **Evidence before conclusion** — market quotes, financial indicators, and bounded daily history are stored as typed, append-only `market_evidence` records with timestamps, provenance, quality state, content hashes, and links to their originating tool result.
+- **Controlled agent runtime** — one unified `AlphaStockHarness` runs business profiles rather than separate role-specific harnesses. Its registry, sandbox, checkpoints, retries, circuit breakers, and recovery rules are shared across research and investment workflows.
+- **Retrieval with guardrails** — document and news retrieval use lexical and vector signals, RRF fusion, entity/time checks, citations, and a set-preserving BGE reranker fallback.
+- **Reviewable output** — the output gate checks evidence, risk language, and citations before a research draft can enter the publication-review path.
+- **No hidden trading capability** — raw shell, file-write/delete, publishing, and broker-trading tools are not exposed by the agent harness, including in the most permissive user mode.
+
+## Features
+
+| Area | Current capability |
+| --- | --- |
+| Research chat | Authenticated conversation with intent routing, governed tool selection, safe trace summaries, citations, and evidence cards. |
+| A-share analysis | Fundamental, technical, sentiment, and risk-oriented research paths; live market evidence is explicitly timestamped and freshness-checked. |
+| Document & news RAG | Session-isolated document ingestion (PDF, Word, text, CSV, Excel), page-aware citations, stock-scoped news retrieval, BM25 + pgvector + RRF, and BGE reranking. |
+| Backtesting & screening | Bounded historical backtests for KDJ/MACD, RSI, and Bollinger strategies, plus research-candidate screening and Alpha-factor endpoints. |
+| Long-term memory | Candidate memories are risk-routed through `safe`, `assist`, and expiring `full_access` modes; only approved Markdown is eligible for indexing. |
+| Publication governance | Evidence/citation/risk checks can block a draft or route it to the configured independent-reviewer and requester-confirmation flow. |
+| Observability | Per-run lifecycle, tool references, evidence status, retry/fallback state, and redacted Langfuse telemetry. |
+| Remote integration | A guarded Streamable HTTP MCP endpoint exposes only bounded research operations through the same gateway and policy boundary. |
 
 ## Architecture
 
-```
-User Request
-   │
-   ├── Intent Recognition  (4-class: discussion / analysis / system / insufficient)
-   │     └── Slot Extraction  →  stock_code, analyst_focus, reply_hint
-   │
-   ├── Stock Analysis  (Python state machine; LangGraph compatibility adapter)
-   │     ├── FundamentalAnalyst    PE / PB / ROE / revenue growth
-   │     ├── TechnicalAnalyst      K-line / trend / volume  ← TechLens-1.5B local model
-   │     └── SentimentAnalyst      RAG news retrieval + sentiment scoring
-   │           validation_node     hallucination firewall  [ANALYSIS_OK / ABORT]
-   │           researcher_node     bull/bear debate
-   │           trader_node         final decision + long-term memory write
-   │
-   └── Quantitative Backtest  (Python fixed runtime; LangGraph compatibility adapter)
-         backtest_node         AKShare data + backtrader engine
-         interpreter_node      RAG strategy knowledge + LLM interpretation
-         optimizer_node        grid search over 36 parameter combinations
+```mermaid
+flowchart LR
+    U["User / MCP client"] --> API["FastAPI API\nAuth · CORS · request guard"]
+    API --> CP["Control plane\nIntent · events · run lifecycle"]
+    CP --> H["AlphaStockHarness\ncheckpoint · recovery · telemetry"]
+    H --> P["Profiles\nResearch · Investment"]
+    P --> G["Tool gateway + sandbox\nregistered read-only capabilities"]
+    G --> D["Market / documents / news / backtest"]
+    D --> E["Evidence stores\nPostgreSQL + pgvector"]
+    E --> O["Output gate\nevidence · citation · risk checks"]
+    O --> R["Review path or blocked result"]
+
+    classDef user fill:#EDE9FE,stroke:#7C3AED,color:#1F2937;
+    classDef runtime fill:#DBEAFE,stroke:#2563EB,color:#1F2937;
+    classDef evidence fill:#DCFCE7,stroke:#16A34A,color:#1F2937;
+    classDef governance fill:#FEF3C7,stroke:#D97706,color:#1F2937;
+    class U user;
+    class API,CP,H,P,G runtime;
+    class D,E evidence;
+    class O,R governance;
 ```
 
----
+The runtime starts each request with an authenticated actor and a bounded execution profile. Tool results are persisted as evidence artifacts; the public response exposes a safe `trace_summary`, while raw prompts and detailed tool payloads remain in private audit storage.
 
-### Source layout (current)
+### Unified harness
 
 ```text
-control_plane/  event routing, run lifecycle and per-run model profile
-agent_runtime/  agents, context, memory, skills, workflows and compatibility adapters
-agent_runtime/compat/langgraph/  opt-in LangGraph adapter for comparison and rollback
-api/            FastAPI delivery endpoints
-frontend/       React + Vite product interface and legacy static page
-backtest/       quantitative domain services
-rag/, tools/    retrieval and external data integrations
-evaluation/     offline evaluation runners and datasets
-tests/          unit, workflow, integration and evaluation tests
-runtime/        ignored local state: reports, caches and checkpoints
+agent_runtime/harness/
+├── run.py        Runtime kernel and run handle
+├── state.py      Append-only events, checkpoints, logical rollback
+├── store.py      PostgreSQL snapshots with atomic local fallback
+├── recovery.py   Resume, rollback, retry, and terminal state handling
+├── tools.py      Capability check, tool retries, evidence references
+├── sandbox.py    Profile allowlist and fail-closed policy
+├── evidence.py   Compact evidence-reference management
+└── profiles.py   Research and investment manifests
 ```
 
-`InvestmentRuntime` defaults to a governed Agent Loop: the model may choose
-among analysis, document RAG, backtest and approved-memory search, while the
-Harness enforces a static read-only allowlist, duplicate suppression, a four-step
-budget, evidence persistence and deterministic publication governance.
-`PythonInvestmentRuntime` is retained as the fixed-workflow fallback
-(`INVESTMENT_EXECUTION_MODE=workflow`); `LangGraphInvestmentRuntime` remains an
-opt-in compatibility adapter for rollback and cross-runtime comparison.
+Research and investment are profiles with different step budgets and registered tools, not separate runtime platforms. Existing workflow and LangGraph adapters remain compatibility paths for comparison and rollback.
 
-## Tech Stack
+## Technology stack
 
 | Layer | Technology |
-|---|---|
-| Agent Orchestration | Governed Agent Loop (default) + Python fixed-workflow / LangGraph compatibility fallbacks |
-| LLM | DeepSeek V3 (primary) / Qwen (auto-fallback) |
-| Technical Analysis Model | TechLens-1.5B (Qwen3 fine-tuned, local inference) |
-| RAG Retrieval | BM25 + pgvector + RRF hybrid search |
-| Vector Store | PostgreSQL 14 + pgvector (50k-row LRU eviction) |
-| Embedding | shibing624/text2vec-base-chinese |
-| Backtest Engine | backtrader + quantstats |
-| Market Data | AKShare (real-time) |
-| Long-term Memory | PostgreSQL + pgvector (conversation persistence and human-approved memory retrieval) |
-| Observability | LangFuse v2 (full LLM trace via Docker) |
-| Auth | Google OAuth / GitHub OAuth / Email verification (Aliyun Direct Mail) |
-| Backend API | FastAPI |
-| Frontend | React 18 + Vite (`frontend/react-app`) |
-| Deployment | Tencent Cloud · Nginx · Let's Encrypt SSL · UptimeRobot |
+| --- | --- |
+| Product UI | React 18, Vite 5, React Router, Zustand, Chart.js |
+| API | Python 3.11, FastAPI, Pydantic, Uvicorn |
+| Runtime | Custom unified Harness, Gateway/Control Plane, LangGraph compatibility adapters |
+| Models | DeepSeek primary routing, Qwen fallback and multimodal support, optional TechLens service for technical analysis |
+| Retrieval | BM25, PostgreSQL + pgvector, reciprocal-rank fusion (RRF), `BAAI/bge-reranker-v2-m3` cross-encoder |
+| Data & analysis | AKShare, optional Tushare, pandas, backtrader, quantstats |
+| Document processing | PyMuPDF, pdfplumber, python-docx, MinerU |
+| Storage | PostgreSQL 17 + pgvector, SQLite only for local publication-review records |
+| Observability | Langfuse (optional), PostgreSQL execution and evidence audit records |
+| Delivery | Docker Compose for local pgvector, GitHub Actions, Nginx deployment |
 
----
+## Repository layout
 
-## Key Design Decisions
-
-### Hallucination Control
-- Ticker names resolved against a local dictionary of 1,500+ A-share stocks — never inferred by the LLM
-- Every analyst output enforces `[ANALYSIS_OK]` / `[ANALYSIS_ABORT]` tagging; malformed or unsupported outputs are blocked before reaching downstream nodes
-- Tool layer validates all returned data types before they enter the LangGraph state
-
-### Hybrid Retrieval (RAG)
-BM25 handles exact-match terms (ticker codes, indicator names); pgvector handles semantic similarity; RRF merges both ranked lists without manual weight tuning.
-
-Current market-price and financial-indicator tool results are also captured as
-structured, append-only evidence snapshots in PostgreSQL table
-`market_evidence`. The table keeps stock code, quote/report time, retrieval
-time, source, quality status, typed JSONB metrics, content hash and the
-auditable Agent `result_ref`; the human-readable tool payload remains in the
-existing tool-result artifact store. Missing or stale timestamps are retained
-with an explicit quality status and are not silently treated as current data.
-Bounded daily K-line history is stored as `daily_history` evidence when the
-research Agent selects `market-history`. Recent snapshots are available from
-`GET /api/v1/stocks/evidence/{stock_code}` with optional `evidence_type` and
-`limit` filters.
-
-The following ablation is a historical internal retrieval diagnostic, not an
-external answer-accuracy or production-quality claim. Current public and
-end-to-end results are reported separately in [RAG Evaluation](#rag-evaluation).
-
-Ablation results across four retrieval strategies (Recall@10):
-
-| Strategy | Recall@10 |
-|---|---|
-| BM25 only | 0.8448 |
-| Dense vector only | 0.8362 |
-| Simple weighted mix | ~0.79 |
-| **Hybrid + RRF** | **0.8707** ✅ |
-
-### Structured Query Understanding
-
-Intent routing uses three layers: deterministic rules first, then a high-confidence local fastText four-class classifier (`discussion` / `analysis` / `system` / `insufficient`), and finally the LLM JSON parser for low-confidence or unfamiliar inputs. For an analysis intent, fastText only returns directly when the stock name can be resolved by the local mapping; otherwise the request falls back to the LLM so stock and analyst-focus slots are not lost. The `analysts_node` reads `analyst_focus` and skips irrelevant analysts (returning `[SKIPPED]`).
-
-Compound requests are not a fifth classifier label: the deterministic orchestration layer emits a backward-compatible `compound_intent` contract and a task DAG.  It distinguishes sequential actions, independent parallel actions, and confirmation-gated trade requests; a technical + fundamental request remains one analysis task.  The scope, safety boundaries and frozen smoke-evaluation contract are in [`openspec/compound-intent-routing/spec.md`](openspec/compound-intent-routing/spec.md).
-
-The routing contract also fails closed for operational requests that mention
-multiple verified stocks, instead of silently selecting one ticker. Backtests
-carry an explicit `backtest_window`; a missing window becomes a blocked slot
-for clarification. The bucketed robustness fixture covers aliases, typos,
-multi-stock ambiguity, missing slots, high-risk wording and compound routes.
-Its results are candidate diagnostics—not online intent accuracy—because the
-cases are authored stress tests pending independent review. See the Chinese
-OpenSpec at [`openspec/intent-routing-robustness/spec.md`](openspec/intent-routing-robustness/spec.md).
-
-Retrieval uses an auditable deterministic query-rewrite plan: locally verified
-entity canonicalisation, explicit time filters and finance synonym expansion.
-The original query remains the audit record; the rewritten form is retrieval
-input only and can never become a fact. Complex read-only comparison or
-multi-hop requests may use constrained LLM decomposition, whose JSON can only
-reuse verified in-query tickers and allowlisted research task types; invalid
-plans fall back to deterministic routing. See the Chinese contract at
-[`openspec/constrained-query-rewrite-and-decomposition/spec.md`](openspec/constrained-query-rewrite-and-decomposition/spec.md).
-
-For evidence conflicts or downside-risk review, the parent may create one
-request-scoped ephemeral reviewer from the `evidence-critic` or `risk-reviewer`
-template. It receives only compact prior observations, has no tools or write
-permissions, and emits created/result/destroyed lifecycle trace events in the
-same request. This is controlled dynamic instantiation, not arbitrary runtime
-code generation or peer-to-peer agent chat. See
-[`agent_runtime/agents/SUBAGENTS.md`](agent_runtime/agents/SUBAGENTS.md).
-
-### Skill Registry
-
-Each skill is registered by `agent_runtime/skills/<skill>/skill.json` with a name, description, trigger, required permissions, semantic version and prompt files. The registry creates a content hash from the manifest and prompt references, so any rule change produces a new traceable `version_id`. `/chat` and `/analyze` permission-filter candidates before asking the LLM to choose from their descriptions; invalid LLM output falls back to deterministic triggers. `document-rag` is a read-only skill (`document:read`) with an isolated handler that retrieves pgvector evidence and page citations. Inspect active metadata through `GET /api/v1/skills`.
-
-### Remote MCP
-
-The application also exposes a guarded Streamable HTTP MCP endpoint at
-`/api/v1/mcp/`. It maps approved external tool calls into the same Gateway and
-Python Runtime used by the web API; it does not give an MCP client direct
-database, filesystem, publishing or trading access. The initial tool set is
-limited to stock-research drafts, bounded historical backtests, strategy
-methodology lookup and human-owned document retrieval. See
-[`MCP_REMOTE.md`](MCP_REMOTE.md) for scopes, deployment variables and an
-end-to-end smoke client. The current server accepts Bearer-capable MCP clients;
-first-class Claude remote connector support remains a separate OAuth task.
-
-### Graceful Degradation
-- DeepSeek failure → auto-switch to Qwen
-- TechLens offline → auto-switch to DeepSeek for technical analysis
-- Any analyst `ABORT` → node skipped, pipeline continues unblocked
-
-### Operational boundary and current capability
-
-| Capability | Current behavior | Boundary |
-|---|---|---|
-| Chat and stock research | Governed Agent Loop chooses only approved read-only skills, retains evidence and returns a reviewable draft | Publication requires authenticated human review when the governance gate says so |
-| Publication review | Output gate checks evidence, risk and citations; an independent reviewer then approves or rejects; the requester must provide the final confirmation | Set `PUBLICATION_REVIEWER_USERS` to a comma-separated allowlist; the same account cannot perform both steps |
-| Document and news RAG | Returns page/evidence identifiers where source material supports them; news uses stock/entity checks before reranking | Retrieval quality is evaluated separately from answer correctness; fixed-set RAGAS is not a production-quality claim |
-| Backtest | Runs configured historical strategies and reports strategy metrics | It is a research simulation; users must set the time split, fees, slippage and benchmark before interpreting results |
-| Compound requests | Builds a validated task DAG with parallel, sequential and confirmation-gated boundaries | Tasks without a local skill binding are explicitly routed to their dedicated endpoint rather than silently fabricated |
-| Dynamic review child | Creates at most one evidence-critic or risk-reviewer instance after evidence exists | Reads only compact approved observations; zero tools/permissions; destroyed after one result |
-| Long-term memory approval | `safe` keeps every candidate pending; `assist` auto-approves low-risk operating lessons and batches the rest; `full_access` requires expiring explicit confirmation and can auto-handle low/medium risk only | Hard-blocked content and high-risk candidates cannot bypass review; approved Markdown still requires explicit `scripts/sync_memory_index.py` |
-| Trading | No broker tool is bound to the Agent Loop | A trade request remains confirmation-gated and cannot become an order in this repository |
-
----
-
-## RAG Evaluation
-
-Full report: [`evaluation/EVAL_REPORT.md`](evaluation/EVAL_REPORT.md)
-
-Latest remote news RAGAS comparison: [`evaluation/RAGAS_REMOTE_REPORT.md`](evaluation/RAGAS_REMOTE_REPORT.md).
-
-The production news path is stock-scoped, news-first BM25 candidate recall
-with entity verification (ticker/current name or official-disclosure alias),
-followed by a locally cached **BGE Cross-Encoder**
-(`BAAI/bge-reranker-v2-m3`) that safely reorders the same Top-5 evidence set.
-Multi-facet requests retain facet coverage and an unavailable reranker safely
-falls back to BM25.
-The implementation and its current validation boundary are recorded in
-[`project-log/rag-rerank-mainline.md`](project-log/rag-rerank-mainline.md).
-Its completed fixed-set RAGAS A/B is in
-[`evaluation/BGE_NEWS_RERANK_REMOTE_REPORT.md`](evaluation/BGE_NEWS_RERANK_REMOTE_REPORT.md):
-BGE has mixed fixed-set results, so it must not be presented as a universal
-quality improvement. A corrected true Top-20 / 20→10→5 diagnostic did not
-beat the current Top-5 faceted-BM25 baseline, so wider pools remain offline
-experiments; the current set-preserving policy and numbers are documented in
-that report.
-
-### Claim boundary and current external result
-
-| Evaluation tier | Scope | Current result | Correct interpretation |
-|---|---|---:|---|
-| FinanceBench external Gold | 150 public financial QA across 84 SEC filings | 43.24% judgeable answer accuracy; 30.41% citation-grounded answer accuracy | Public end-to-end benchmark; useful for locating gaps, not a production KPI |
-| FinanceBench retrieval | Metadata-free full 84-document corpus, Top-10 pages | 13.67% Recall@10 | Document discovery remains a primary bottleneck |
-| Internal fixed news snapshot | 10 public-news queries | BGE improves context recall/precision but regresses faithfulness/relevancy in the entity-verified Top-5 A/B | Observable reranker experiment, not a universal lift claim |
-
-The data protocol, reproducible commands and resume-safe wording are in
-[`evaluation/datasets/EXTERNAL_BENCHMARK_CLAIMS.md`](evaluation/datasets/EXTERNAL_BENCHMARK_CLAIMS.md).
-The full answer, citation and retrieval metrics are in
-[`evaluation/E2E_EVAL_REPORT.md`](evaluation/E2E_EVAL_REPORT.md).
-
-RAGAS is run in a separate evaluation environment (`requirements-ragas.txt`) so it cannot change the production LangChain runtime.  The Python 3.13-compatible runner uses **RAGAS 0.2** with the configured judge model and DashScope `text-embedding-v3`; Answer Relevancy runs at `strictness=1` because the configured compatible endpoint does not support `n > 1`.
-
-| Metric | Dense-only | Hybrid (BM25 + pgvector + RRF) |
-|---|---|---|
-| **Faithfulness** | 0.854 | **0.952 ✅ (+10%)** |
-| Context Recall | 0.567 | 0.567 |
-| Context Precision | 0.527 | 0.487 |
-
-Development follows **EDD (Evaluation-Driven Development)**: every retrieval or prompt change runs `evaluation/evaluator.py` before merging.
-
-The online stock corpus combines recent Eastmoney news with filtered primary-source CNInfo disclosures.  News headlines remain the precision-first lexical source; official PDF chunks fill exact earnings, dividend, buyback and personnel facts.  Multi-intent questions reserve one lexical slot per detected finance facet, and duplicate chunks from the same disclosure are collapsed by source URL.  The complete before/after history and claim boundaries are recorded in [`project-log/rag-recall-improvements.md`](project-log/rag-recall-improvements.md).
-
-```bash
-# Through a local SSH tunnel to PostgreSQL (defaults to the 10 eval stocks)
-python -m scripts.refresh_announcement_index --port 15432 --lookback-days 30
-
-# Fast, model-free retrieval A/B before spending judge-model tokens
-python -m evaluation.run_remote_db_retrieval_eval --port 15432 \
-  --bm25-only --source-kinds news,announcement --evidence-mode online
+```text
+.
+├── api/                 FastAPI routers, authentication, uploads, reviews
+├── agent_runtime/       Harness, profiles, workflows, memory, skills, MCP server
+├── control_plane/       Event routing, gateway, run persistence, governance
+├── market/              Structured market-evidence model and persistence
+├── rag/                 News/document retrieval and reranking
+├── backtest/            Historical strategies, screening, and reporting
+├── evaluation/          Dataset contracts, offline evaluation, release gates
+├── frontend/react-app/  React + Vite application
+├── scripts/             Index maintenance, smoke clients, local utilities
+├── tests/               Unit, workflow, integration, and governance tests
+└── .github/workflows/   Backend and frontend CI/CD workflows
 ```
 
-Online monitoring uses one Langfuse trace per request. It records a redacted query fingerprint, corpus snapshot, top-k distances, rerank state, citation structural validation, abstention, token usage and latency. Public API responses expose only `run_id`, answer/citations and a safe `trace_summary`; prompts and detailed evidence remain in the private audit/Langfuse view. Alerting threshold: Faithfulness < 0.85 triggers review.
+## Quick start
 
----
+### Prerequisites
 
-## Quick Start
+- Python 3.11
+- Node.js 20 (for the frontend)
+- Docker Desktop or a reachable PostgreSQL instance with the `vector` extension
+- A DeepSeek API key for live agent execution
+
+### 1. Clone and prepare Python
 
 ```bash
-git clone https://github.com/Neon549/Alpha_stock
+git clone https://github.com/Neon549/Alpha_stock.git
 cd Alpha_stock
+
+python -m venv .venv
+# PowerShell: .venv\Scripts\Activate.ps1
+# macOS/Linux: source .venv/bin/activate
+python -m pip install --upgrade pip
 pip install -r requirements.txt
-
-# Full deterministic regression suite (the CI command)
-# PowerShell
-$env:ALPHASTOCK_SKIP_DOTENV='1'; $env:ALPHASTOCK_OFFLINE_TESTS='1'; python -m pytest -q tests
-# bash / Linux
-ALPHASTOCK_SKIP_DOTENV=1 ALPHASTOCK_OFFLINE_TESTS=1 python -m pytest -q tests
-
-# 训练本地四分类意图模型；生成 models/intent_classifier.bin
-python scripts/train_intent_classifier.py
 ```
 
-Configure `.env`:
-```env
-DEEPSEEK_API_KEY=your_key
-DASHSCOPE_API_KEY=your_key
-TUSHARE_TOKEN=your_token
-POSTGRES_DSN=postgresql://user:password@localhost:5432/alphastock
-LANGFUSE_PUBLIC_KEY=your_key
-LANGFUSE_SECRET_KEY=your_key
-LANGFUSE_BASE_URL=https://cloud.langfuse.com  # optional; self-hosted deployments may use LANGFUSE_HOST
-```
+### 2. Start the local pgvector database
 
 ```bash
-python -c "from db import init_db; init_db()"
-python main.py
+docker compose -f docker-compose.pgvector.yml up -d
 ```
 
----
+Copy `.env.pgvector.example` to the ignored `.env.pgvector` file, or set `POSTGRES_DSN` yourself. Then create a local `.env` file (never commit it):
 
-## API Reference
+```dotenv
+# Required for live agent execution
+DEEPSEEK_API_KEY=replace_me
+
+# Recommended for fallback / vision / retrieval evaluation
+DASHSCOPE_API_KEY=replace_me
+
+# Optional market-data provider for paths that use Tushare
+TUSHARE_TOKEN=replace_me
+
+# Use this instead of .env.pgvector when connecting to an existing database
+# POSTGRES_DSN=postgresql://user:password@127.0.0.1:5432/alphastock
+
+# Optional tracing
+# LANGFUSE_PUBLIC_KEY=replace_me
+# LANGFUSE_SECRET_KEY=replace_me
+# LANGFUSE_HOST=https://cloud.langfuse.com
+```
+
+The application initializes its additive PostgreSQL schema at startup:
 
 ```bash
-# Stock analysis
-curl -X POST http://localhost:8000/api/v1/analyze \
-  -H "Content-Type: application/json" \
-  -d '{"stock_code": "600519"}'
+uvicorn main:app --reload
+```
 
-# Quantitative backtest
-curl -X POST http://localhost:8000/api/v1/backtest \
-  -H "Content-Type: application/json" \
-  -d '{"stock_code": "600487", "strategy": "rsi", "start_date": "20220101", "end_date": "20241231"}'
+Open <http://localhost:8000/docs> for the local OpenAPI interface and call <http://localhost:8000/api/v1/health> to check startup status.
 
-# Health check
+### 3. Start the frontend
+
+```bash
+cd frontend/react-app
+npm ci
+npm run dev
+```
+
+Vite proxies `/api` to `http://localhost:8000` in development. Production builds are emitted to `frontend/react-app/dist/`:
+
+```bash
+npm run build
+npm run preview
+```
+
+## Configuration
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `DEEPSEEK_API_KEY` | Live agent runs | Primary language-model provider. |
+| `POSTGRES_DSN` | Persistent deployment | PostgreSQL connection; local Docker defaults are supplied by `.env.pgvector`. |
+| `DASHSCOPE_API_KEY` | Optional | Qwen fallback, multimodal analysis, and compatible evaluation embeddings. |
+| `TUSHARE_TOKEN` | Optional | Enables Tushare-backed market-data paths. |
+| `TECHLENS_BASE_URL` | Optional | URL of the separately deployed technical-analysis model. |
+| `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST` | Optional | Langfuse tracing. Failure to connect does not stop the API. |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI` | Optional | Google OAuth. The backend verifies Google tokens; it does not trust client profile claims. |
+| `PUBLICATION_REVIEWER_USERS` | Review-enabled deployment | Comma-separated independent reviewer allowlist. |
+| `ALPHASTOCK_CORS_ORIGINS` | Production | Explicit comma-separated browser origins. |
+| `ALPHASTOCK_SANDBOX_NETWORK=deny` | Optional | Disables registered network-backed research tools during an incident. |
+
+## API overview
+
+Interactive research, backtest, upload, review, and run-diagnostics endpoints require an authenticated `Authorization: Bearer <token>` or `X-Auth-Token` header. Use the OpenAPI page for request schemas and current response models.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/v1/health` | API, business-router, and news-index readiness. |
+| `POST /api/v1/auth/register`, `/auth/login`, `/auth/logout` | Local account lifecycle. |
+| `POST /api/v1/auth/google/token` | Server-verified Google token login when configured. |
+| `POST /api/v1/chat` | Governed research conversation. |
+| `POST /api/v1/analyze` | Evidence-aware stock analysis draft. |
+| `GET /api/v1/runs/{run_id}` | Authenticated run diagnostics, steps, and evidence status. |
+| `GET /api/v1/stocks/evidence/{stock_code}` | Structured quote, financial, or history evidence snapshots. |
+| `POST /api/v1/backtest` | Bounded historical strategy backtest. |
+| `POST /api/v1/upload/document` | Session-owned document ingestion for RAG. |
+| `GET /api/v1/skills` | Active public skill metadata. |
+| `/api/v1/mcp/` | Guarded Streamable HTTP MCP endpoint. |
+
+Example:
+
+```bash
 curl http://localhost:8000/api/v1/health
+
+curl -X POST http://localhost:8000/api/v1/analyze \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"stock_code":"600519"}'
 ```
 
----
+## Governance and safety
 
-## Backtest Strategies
+### Evidence and publication
 
-| Strategy | Entry Signal | Exit Signal | Best For |
-|---|---|---|---|
-| `kdj_macd` | KDJ golden cross + MACD histogram turns positive | KDJ death cross or MACD turns negative | Trending markets |
-| `rsi` | RSI < 30 | RSI > 70 | Mean-reversion / range-bound |
-| `boll` | Price crosses above lower band | Price crosses below upper band | Range-bound markets |
+- **Market evidence:** `quote`, `financial_indicator`, and `daily_history` records have a retrieval time, reporting/as-of time where available, source, quality state, JSON payload hash, and `result_ref`. Stale or missing timestamps are marked rather than silently treated as current.
+- **RAG evidence:** uploaded documents are session-owned; document citations are returned only when source support exists. News retrieval performs entity verification before BGE reranking. If the reranker is unavailable, the original bounded candidate set is retained.
+- **Output gate:** unsupported investment claims, absent traceable evidence, invalid citations, and risky language can produce a blocked draft rather than an unsupported conclusion.
+- **Publication review:** when review is required, the system writes a local SQLite review record, requires a configured independent reviewer, then requires final confirmation by the original requester before persisting the approved research decision. This is publication governance, not broker execution.
 
-Backtest validation on 62 out-of-sample A-share stocks: max drawdown reduced from **24.6% → 15.2%** after adding position filters (-2% gap-down skip, 8% take-profit lock).
+### Three memory-approval modes
 
----
+| Mode | Behavior |
+| --- | --- |
+| `safe` | Keeps every long-term-memory candidate pending for explicit review. |
+| `assist` | Automatically accepts low-risk operating lessons; groups the rest for batch confirmation. |
+| `full_access` | Requires explicit, expiring acknowledgement; may auto-handle low/medium-risk operating lessons, while hard-blocked and high-risk content remains protected. |
 
-## Related Project
+Approved candidates are rendered as Markdown under `agent_runtime/memory/knowledge/`; only `status: approved` content can be indexed. Run `python scripts/sync_memory_index.py` to synchronize approved memory into the retrieval index.
 
-**[TechLens-1.5B](https://github.com/Neon549/TechLens-1.5B)** — A Qwen3-1.7B model fine-tuned via SFT + DPO to serve as the local technical analyst. Eliminates cloud API latency (P50 8.5s → local) and reduces hallucinated price levels to 0% on the evaluation set. Integrated as the `TechnicalAnalyst` node with automatic DeepSeek fallback.
+`full_access` does **not** create raw command, arbitrary filesystem, publishing, or trading access. The harness enforces a profile allowlist and immutable denials for those side effects in every mode.
+
+## Quality and evaluation
+
+Run the deterministic offline regression suite used by CI:
+
+```powershell
+$env:ALPHASTOCK_SKIP_DOTENV='1'
+$env:ALPHASTOCK_OFFLINE_TESTS='1'
+python -m pytest -q tests
+```
+
+For an evaluation-focused local report, see the versioned dataset and claim controls in [`evaluation/README.md`](evaluation/README.md). The project keeps smoke fixtures, candidate corpora, external benchmarks, and production-admission data separate; retrieval metrics, RAGAS scores, and answer correctness are not treated as interchangeable claims.
+
+The current news path uses entity-verified BM25 candidates plus a locally cached BGE Cross-Encoder (`BAAI/bge-reranker-v2-m3`) that only reorders the existing Top-5 set. Wider candidate-pool experiments and their limitations are documented in [`evaluation/BGE_NEWS_RERANK_REMOTE_REPORT.md`](evaluation/BGE_NEWS_RERANK_REMOTE_REPORT.md).
+
+## CI/CD
+
+Two GitHub Actions workflows run from this single repository:
+
+- **Backend:** `.github/workflows/deploy.yml` installs `requirements-ci.txt`, runs the offline test suite, then deploys `main` after success.
+- **Frontend:** `.github/workflows/deploy-frontend.yml` runs `npm ci && npm run build` for pull requests that change `frontend/`, and deploys the built site after a successful push to `main`.
+
+The deployment workflows require repository secrets named `SERVER_HOST`, `SERVER_USER`, and `NEON_ALPHA`. Keep those values in GitHub Actions secrets only; never add them to `.env` files committed to the repository.
+
+## Documentation
+
+- [Unified Harness](agent_runtime/harness/README.md) — runtime kernel, persistence fallback, recovery, and sandbox contract.
+- [Evaluation guide](evaluation/README.md) — dataset integrity, release-quality gates, RAG evaluation, and benchmark claim boundaries.
+- [Remote MCP](MCP_REMOTE.md) — supported tools, scopes, deployment settings, and smoke client.
+- [Control plane](control_plane/README.md) — event lifecycle and runtime ownership.
+- [Agent learning](agent_learning/README.md) — evaluation-driven learning artifacts and review boundaries.
+
+## Limitations
+
+- Market data and model responses can be delayed, incomplete, or unavailable. A timestamped evidence record is not a guarantee of correctness.
+- Backtests are historical simulations; users must choose sensible windows, fees, slippage, benchmarks, and out-of-sample validation before interpreting results.
+- The repository is an A-share research product, not a brokerage, investment adviser, or order-management system. Nothing generated by AlphaStock is an instruction to buy or sell securities.
+- Evaluation reports contain explicitly scoped engineering measurements. Do not promote a candidate or benchmark metric into a production-quality claim without its documented review protocol.
+
+## Contributing
+
+Issues and pull requests are welcome. Please keep changes small, include tests for behavior changes, and run the offline suite before opening a PR. Do not commit API keys, provider tokens, database URLs, uploaded documents, or generated runtime artifacts.
+
+## License
+
+No open-source license has been selected for this repository yet. Until a license is added, treat the code as **all rights reserved** and request permission before reuse or redistribution.
