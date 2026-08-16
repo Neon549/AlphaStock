@@ -1,20 +1,18 @@
-# End-to-end RAG benchmark matrix
+# 端到端 RAG 评测矩阵
 
-| Dataset | Cases | Evidence status | Can report answer accuracy? | Claim boundary |
+| 数据集 | 数量 | 证据状态 | 能否报告答案正确率 | 声明边界 |
 |---|---:|---|---|---|
-| FinanceBench open-source v1 | 150 | Public human answer/evidence/page annotations | Yes, with automated judge explicitly named | External benchmark; not production traffic |
-| `rag_golden_seed` | 3 | Human-reviewed fixtures | Yes, regression accuracy only | Small deterministic regression set |
-| `production_candidate_v1` | 22 | Candidate labels; independent review pending | Yes, as internal candidate evaluation | Do not call production Gold |
-| `heldout_public_filings_v1/v2` | 25 / 22 | Candidate expert mappings; freeze/review pending | Yes, as validation diagnostics | Do not use for final resume claim yet |
-| CFQA candidate set | 20 | Public QA answers, PDF/evidence mapping pending | Answer-only diagnostics; not grounded RAG yet | Do not claim citation-grounded accuracy |
+| CFQA 页锚定候选子集 | 9 | 公开问题、官方年报页码和 Evidence ID；独立复核待完成 | 否；当前只报告检索/引用页诊断 | 中文主基准候选集，不是线上流量 |
+| CFQA 测试候选 | 2,036 | 已固定源仓库；年报 PDF 映射待完成 | 否 | 只能报告导入完整性，不能称为 RAG Gold |
+| `rag_golden_seed` | 3 | 人工复核的回归夹具 | 可以，但只限回归正确率 | 小型确定性回归集 |
+| `production_candidate_v1` | 22 | 候选标签；独立复核待完成 | 只能作为内部候选诊断 | 不得称为生产 Gold |
+| `heldout_public_filings_v1/v2` | 25 / 22 | 专家候选映射；冻结/复核待完成 | 只能作为验证诊断 | 暂不用于最终简历结论 |
+| FinanceBench 开源样本 | 150 | 公开人工答案/证据/页码标注 | 可以，但必须明确自动判定器 | 可选英文跨市场对照，不是中文主基准 |
 
-Completed run summary is recorded in
-[`evaluation/E2E_EVAL_REPORT.md`](../E2E_EVAL_REPORT.md). It reports the
-public FinanceBench result separately from the internal candidate/validation
-sets and includes the conservative all-case lower bound for API timeouts.
+CFQA 本次运行摘要记录在
+[`CFQA_RAG_REPORT.md`](CFQA_RAG_REPORT.md)。FinanceBench 结果仍与内部候选/验证集
+分开保存，并且不参与中文主结论。
 
-The end-to-end runner reports `answer_accuracy` and
-`grounded_answer_accuracy` separately. `grounded_answer_accuracy` requires a
-correct benchmark answer, all required citations, and every cited page to be
-among retrieved evidence. RAGAS Faithfulness remains a separate support metric
-and is never substituted for answer correctness.
+端到端运行器分别报告 `answer_accuracy` 和 `grounded_answer_accuracy`。
+`grounded_answer_accuracy` 要求答案正确、引用齐全且每个引用页都在检索证据中。
+RAGAS Faithfulness 仍是独立的支持性指标，不能替代答案正确率。

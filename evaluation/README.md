@@ -231,34 +231,62 @@ test. The admission audit blocks identity fields/common PII patterns and any
 overlap with the current retriever-selection datasets by query, cited document
 or labelled fact.
 
-### Public human-annotated external benchmark
+### 中文主基准：CFQA
 
-To support an externally reproducible resume or interview claim without
-pretending that the AlphaStock candidate cases are human Gold, the project
-also imports the open-source FinanceBench sample. FinanceBench provides 150
-public financial QA cases with human answers, human justifications, evidence
-text, zero-indexed evidence pages, and the corresponding SEC-filing PDFs. The
-imported cases are kept under the separate `external_gold` tier; they are not
-AlphaStock online traffic and do not become a production-representative
-claim.
+项目的中文年报问答主基准是 CFQA，而不是英文 FinanceBench。CFQA 提供中文上市
+公司年报问题、答案和答案页码，适合检验公司/报告定位、中文术语召回、页级引用和
+后续的表格数值推理。当前快照和本次 BM25、中文向量、BGE 对照结果见
+[`CFQA 中文财报 RAG 评测报告`](datasets/CFQA_RAG_REPORT.md)。
 
-Generate the pinned source manifest, 150-case public Gold JSONL, and page-level
-PDF corpus:
+重新拉取并固定源仓库版本：
+
+```powershell
+$commit = (git -c safe.directory=runtime/external/CFQA -C runtime/external/CFQA rev-parse HEAD).Trim()
+python -B evaluation/import_external_public_qa.py `
+  --repo runtime/external/CFQA `
+  --dataset cfqa `
+  --split test `
+  --commit $commit `
+  --output runtime/external/cfqa_test_candidates.jsonl
+```
+
+导入后的 2,036 条记录仍是待映射候选。只有下载并固定对应的官方年报、把 CFQA
+页码映射到 Evidence ID，并完成独立人工复核后，才可以作为正式 RAG Gold。当前
+已页锚定的 9 条样本可运行：
+
+```powershell
+python -m evaluation.run_candidate_rag_eval `
+  --cases evaluation/corpus/external_cfqa_v1/rag_validation_candidates.jsonl `
+  --chunks runtime/reports/external-cfqa-v1.chunks.jsonl `
+  --source-manifest evaluation/corpus/external_cfqa_v1/sources.json `
+  --k 10 `
+  --methods bm25_global bm25_entity_period_scoped bm25_entity_period_scoped_alias `
+  --dataset-tier external_cfqa_candidate_pending_independent_review `
+  --out runtime/reports/external-cfqa-v1.bm25.rerun.json
+```
+
+### 可选英文对照：FinanceBench
+
+FinanceBench 仅作为英文跨市场对照保留，不参与中文主结论。为避免把 AlphaStock
+候选集误写成人工 Gold，FinanceBench 仍单独放在 `external_gold` 层。它提供 150
+条公开金融问答，内容包括人工答案、人工解释、证据文本、从 0 开始的证据页码和
+对应的 SEC 文件。它不是 AlphaStock 的线上流量，也不能转化为生产代表性结论。
+
+生成固定的来源清单、150 条公开 Gold JSONL 和页级 PDF 语料：
 
 ```bash
 python -m evaluation.import_financebench
 ```
 
-Run the unchanged AlphaStock BM25 retrieval evaluation on that external Gold:
+运行 AlphaStock BM25 检索评测：
 
 ```bash
 python -m evaluation.run_financebench_eval ^
   --out runtime/reports/financebench-v1.retrieval.json
 ```
 
-For a more realistic RAG index, split long PDF pages into short retrievable
-chunks while preserving the original Gold-page backlink, then run the same
-page-level protocol:
+如果需要更接近实际 RAG 索引的对照，可以把长 PDF 页面切成短检索块，同时保留
+原始 Gold 页码回链：
 
 ```bash
 python -m evaluation.build_financebench_chunks ^
@@ -268,25 +296,16 @@ python -m evaluation.run_financebench_eval ^
   --out runtime/reports/financebench-v1.chunks-1200.bm25.json
 ```
 
-The original page baseline is Recall@10 13.67% for global BM25 and 23.67%
-after deterministic company/report-period scoping. On the 1,200-character
-page-citable chunks, those same retrievers reached 14.33% and 26.00%; scoped
-Recall@100 was 53.78%, which identifies ranking (rather than candidate
-discovery alone) as the next bottleneck. An optional CPU-feasible English
-Dense/RRF run uses `--embedding-model bge_small_en_v1_5`; `bge_m3` remains the
-multilingual reference model for a GPU-capable runner. These are external
-benchmark retrieval results, not online-user accuracy. The source benchmark and its
-annotation fields are documented in the [FinanceBench repository](https://github.com/patronus-ai/financebench).
-See [external benchmark reporting and resume wording](datasets/EXTERNAL_BENCHMARK_CLAIMS.md)
-for the exact claim boundaries and current protocol-specific numbers.
+原始页级基线中，全库 BM25 的 Recall@10 为 13.67%，公司/报告期约束后为 23.67%。
+这些数字只用于英文跨市场对照，不是线上用户准确率。来源和声明边界见
+[`外部基准声明边界`](datasets/EXTERNAL_BENCHMARK_CLAIMS.md)。
 
-## End-to-end answer evaluation
+## 端到端答案评测
 
-`run_rag_e2e_eval` evaluates the complete path: query -> retrieval -> answer
-generation -> benchmark answer judge -> citation grounding. It intentionally
-does not call retrieval Recall or RAGAS Faithfulness "answer accuracy".
+`run_rag_e2e_eval` 评估完整路径：问题 -> 检索 -> 答案生成 -> 基准答案判定 ->
+引用支撑。它不会把检索 Recall 或 RAGAS Faithfulness 误称为答案正确率。
 
-Example on the public FinanceBench sample:
+英文 FinanceBench 的端到端示例（仅作可选对照）：
 
 ```powershell
 $env:HF_HUB_OFFLINE = "1"
@@ -299,19 +318,16 @@ python -m evaluation.run_rag_e2e_eval `
   --out runtime/reports/financebench-v1.e2e.json
 ```
 
-The report separates:
+报告会分开记录：
 
-* `answer_accuracy`: benchmark judge says the generated answer is materially correct;
-* `grounded_answer_accuracy`: answer is correct, required citations are present,
-  and cited pages were actually retrieved;
-* `retrieval_hit_rate_at_k`: labelled evidence was retrieved, independent of
-  whether the model answered correctly.
+* `answer_accuracy`：基准判定器认为生成答案实质正确；
+* `grounded_answer_accuracy`：答案正确、引用齐全，并且引用页确实被检索到；
+* `retrieval_hit_rate_at_k`：检索到了标注证据，与模型是否答对无关。
 
-The configured judge is an automated LLM judge. It is suitable for a
-reproducible engineering benchmark, but it is not a claim that every generated
-answer was independently human-reviewed. The public FinanceBench references
-and evidence annotations are human-annotated; the AlphaStock answer outputs
-remain machine-judged unless a separate human audit is performed.
+配置的判定器是自动 LLM 判定器，适合可复现的工程基准，但不代表每个生成答案都
+经过独立人工审核。FinanceBench 的参考答案和证据标注来自人工；AlphaStock 的
+答案输出仍是机器判定，除非另行完成人工审计。CFQA 当前页锚定候选的
+`judged_cases=0`，因此不报告答案正确率。
 
 ### Real user-query intake is not only RAG
 

@@ -1,8 +1,25 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-12",
+  "generated_at": "2026-08-16",
   "claim_boundary": "External public benchmark only; not AlphaStock online traffic and not production-tier Gold until independent review.",
   "datasets": [
+    {
+      "id": "cfqa-test-candidates-v2",
+      "source": "CFQA",
+      "source_url": "https://github.com/ygan/CFQA",
+      "license": "MIT",
+      "repository_commit": "61c9ec3c4335d0411a1735cd228af8b3ead114fc",
+      "source_file": "dataset/split_by_company/split_by_company_test.json",
+      "source_file_sha256": "869ec90815e2feb77763d0fa40317df139051d46987398b11ad12413be4dedb0",
+      "local_candidate": "runtime/external/cfqa_test_candidates.jsonl",
+      "raw_case_count": 2100,
+      "case_count": 2036,
+      "filtered_empty_question_or_answer": 64,
+      "sampling": {"method": "all_rows_after_required_question_and_answer_filter"},
+      "evidence_status": "pdf_mapping_pending",
+      "allowed_metrics_after_mapping": ["recall_at_k", "precision_at_k", "mrr", "ndcg", "citation_hit_rate"],
+      "blocked_claims": ["online_user_accuracy", "production_representative_rag_quality", "answer_accuracy_before_independent_review"]
+    },
     {
       "id": "cfqa-test-sample-120",
       "source": "CFQA",
