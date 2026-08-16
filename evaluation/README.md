@@ -252,7 +252,8 @@ python -B evaluation/import_external_public_qa.py `
 
 导入后的 2,036 条记录仍是待映射候选。只有下载并固定对应的官方年报、把 CFQA
 页码映射到 Evidence ID，并完成独立人工复核后，才可以作为正式 RAG Gold。当前
-已页锚定的 9 条样本可运行：
+已页锚定的 20 条扩展样本可运行，完整解析、下载和评测命令见
+[`CFQA 中文财报 RAG 评测报告`](datasets/CFQA_RAG_REPORT.md)。原有 9 条 v1 样本仍保留作历史对照：
 
 ```powershell
 python -m evaluation.run_candidate_rag_eval `

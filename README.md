@@ -237,7 +237,7 @@ python -m pytest -q tests
 
 当前新闻路径使用实体校验后的 BM25 候选集，再使用本地缓存的 BGE 交叉编码器（`BAAI/bge-reranker-v2-m3`）对既有前 5 条结果进行重排。更大候选池的离线实验和适用边界记录在 [`evaluation/BGE_NEWS_RERANK_REMOTE_REPORT.md`](evaluation/BGE_NEWS_RERANK_REMOTE_REPORT.md)。
 
-中文年报问答主基准使用 CFQA；本次固定快照、2,036 条可导入候选、9 条页锚定检索子集以及 BM25/中文向量/BGE 对照结果见 [`evaluation/datasets/CFQA_RAG_REPORT.md`](evaluation/datasets/CFQA_RAG_REPORT.md)。FinanceBench 仅保留为可选英文跨市场对照，不作为中文主结论。
+中文年报问答主基准使用 CFQA；本次固定快照、2,036 条可导入候选、20 条页锚定检索子集以及 BM25/中文向量/BGE 对照结果见 [`evaluation/datasets/CFQA_RAG_REPORT.md`](evaluation/datasets/CFQA_RAG_REPORT.md)。FinanceBench 仅保留为可选英文跨市场对照，不作为中文主结论。
 
 ## 自动化构建与部署
 

@@ -21,6 +21,22 @@
       "blocked_claims": ["online_user_accuracy", "production_representative_rag_quality", "answer_accuracy_before_independent_review"]
     },
     {
+      "id": "cfqa-page-mapped-v2-candidate-20",
+      "source": "CFQA",
+      "source_url": "https://github.com/ygan/CFQA",
+      "license": "MIT",
+      "repository_commit": "61c9ec3c4335d0411a1735cd228af8b3ead114fc",
+      "local_candidate": "runtime/reports/cfqa-v1-20.rag.jsonl",
+      "local_source_manifest": "runtime/external/cfqa_v1_sources_resolved.json",
+      "case_count": 20,
+      "document_count": 19,
+      "corpus_snapshot": "sha256:aa70fcb9cd72ecbe4116f5d453e9d275b1cbd10ddc226a7f4974424f07b236f5",
+      "candidate_index_snapshot": "sha256:7709b4d36f17845d51e780c7dd99ac7647a5e2e60a6e9a4cded1de98555d1b91",
+      "evidence_status": "page_anchored_pending_independent_human_review",
+      "allowed_metrics": ["retrieval_hit_at_k", "recall_at_k", "mrr", "ndcg", "citation_hit_rate"],
+      "blocked_claims": ["answer_accuracy", "grounded_answer_accuracy", "online_user_accuracy", "production_representative_rag_quality"]
+    },
+    {
       "id": "cfqa-test-sample-120",
       "source": "CFQA",
       "source_url": "https://github.com/ygan/CFQA",

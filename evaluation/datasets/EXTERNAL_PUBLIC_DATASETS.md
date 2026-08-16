@@ -31,10 +31,10 @@ python -B evaluation/import_external_public_qa.py `
 4. 人工复核问题、答案、页码和是否允许拒答；
 5. 独立冻结后，才提升为 AlphaStock 的 `production` 测试集。
 
-本次已经完成的页锚定候选子集位于
-`evaluation/corpus/external_cfqa_v1/rag_validation_candidates.jsonl`，包含 9 条
-问题、7 份官方年报和 3,319 个文档块。它的审核状态仍是
-`manual_review_pending`，只可用于候选检索诊断；本次结果和 BGE 对照见
+本次已完成扩展的页锚定候选在运行时生成
+`runtime/reports/cfqa-v1-20.rag.jsonl`，包含 20 条问题、19 份官方年报和 8,972 个
+文档块。它的审核状态仍是 `manual_review_pending`，只可用于候选检索诊断；本次
+结果和 BGE 对照见
 [`CFQA_RAG_REPORT.md`](CFQA_RAG_REPORT.md)。
 
 ## 第二批：FinTruthQA（问法和路由补充）
