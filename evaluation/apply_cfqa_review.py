@@ -57,6 +57,22 @@ def apply_repairs(
             "reason": str(repair.get("reason", "")),
         }
 
+    for normalization in manifest.get("answer_normalizations", []):
+        case_id = str(normalization.get("case_id", ""))
+        if case_id not in output_by_case:
+            raise ValueError(f"normalization case does not exist: {case_id}")
+        row = output_by_case[case_id]
+        if "reference_answer" in normalization:
+            row["reference_answer"] = str(normalization["reference_answer"])
+        if "answer_facts" in normalization:
+            facts = normalization["answer_facts"]
+            if not isinstance(facts, list):
+                raise ValueError(f"answer_facts must be a list for {case_id}")
+            row.setdefault("expected", {})["answer_facts"] = copy.deepcopy(facts)
+        if "calculation" in normalization:
+            row.setdefault("expected", {})["calculation"] = copy.deepcopy(normalization["calculation"])
+        row.setdefault("normalization_sidecar", {})["status"] = "normalized_pending_independent_human_review"
+
     return output
 
 

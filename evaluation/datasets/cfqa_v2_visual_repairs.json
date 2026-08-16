@@ -25,5 +25,135 @@
       ],
       "reason": "资产负债率需要由 p18 的负债总额和资产总额计算，原始 p29 不是充分证据。"
     }
+  ],
+  "answer_normalizations": [
+    {
+      "case_id": "cfqa-v1-001",
+      "reference_answer": "截至 2022 年 12 月 31 日，公司及全资子公司拥有有效授权专利 766 个，其中中国发明专利 75 个、中国实用新型专利 459 个、中国外观专利 208 个、国际外观专利 24 个，软件著作权 87 项。",
+      "answer_facts": [
+        {"name": "patent_total", "value": "766", "unit": "项"},
+        {"name": "china_invention_patents", "value": "75", "unit": "项"},
+        {"name": "china_utility_patents", "value": "459", "unit": "项"},
+        {"name": "china_design_patents", "value": "208", "unit": "项"},
+        {"name": "international_design_patents", "value": "24", "unit": "项"},
+        {"name": "software_copyrights", "value": "87", "unit": "项"}
+      ]
+    },
+    {
+      "case_id": "cfqa-v1-002",
+      "reference_answer": "伊泰B股2020年外购煤数量为2,520万吨，2019年为3,109万吨，变化率为（2520-3109）/3109=-18.94%。",
+      "answer_facts": [
+        {"name": "coal_2020_quantity", "value": "2520", "unit": "万吨"},
+        {"name": "coal_2019_quantity", "value": "3109", "unit": "万吨"},
+        {"name": "coal_change_rate", "value": "-18.94", "unit": "%"}
+      ],
+      "calculation": {
+        "name": "coal_change_rate",
+        "formula": "(2520-3109)/3109*100",
+        "expected_value": "-18.94",
+        "unit": "%"
+      }
+    },
+    {
+      "case_id": "cfqa-v1-003",
+      "reference_answer": "精工钢构2022年生产部门共有4,006名员工。",
+      "answer_facts": [
+        {"name": "production_staff", "value": "4006", "unit": "人"}
+      ]
+    },
+    {
+      "case_id": "cfqa-v1-004",
+      "reference_answer": "亚宝药业2019年药品集中招标采购中，儿童清咽解热口服液10ml*6支中标价格为45.00-49.5元，合计实际采购量为1,189,038；10ml*9支中标价格为63.00-73元，合计实际采购量为889,380。",
+      "answer_facts": [
+        {"name": "product_6_price_min", "value": "45.00", "unit": "元"},
+        {"name": "product_6_price_max", "value": "49.5", "unit": "元"},
+        {"name": "product_6_purchase_quantity", "value": "1189038", "unit": "采购量"},
+        {"name": "product_9_price_min", "value": "63.00", "unit": "元"},
+        {"name": "product_9_price_max", "value": "73", "unit": "元"},
+        {"name": "product_9_purchase_quantity", "value": "889380", "unit": "采购量"}
+      ]
+    },
+    {
+      "case_id": "cfqa-v1-005",
+      "reference_answer": "2022年和邦生物公司计提S.T.K.商誉减值66,074,354.04元。",
+      "answer_facts": [
+        {"name": "stk_goodwill_impairment", "value": "66074354.04", "unit": "元"}
+      ]
+    },
+    {
+      "case_id": "cfqa-v1-006",
+      "reference_answer": "昊海生科2020年存货余额为28,263,248.47元。",
+      "answer_facts": [
+        {"name": "inventory", "value": "28263248.47", "unit": "元"}
+      ]
+    },
+    {
+      "case_id": "cfqa-v1-008",
+      "reference_answer": "天津发展公司控股股东泰达建设集团实施混合所有制改革，引入2家战略投资者；混改完成后，泰达控股占比30%，津联海胜持股40%，中科泰富持股30%。",
+      "answer_facts": [
+        {"name": "strategic_investor_count", "value": "2", "unit": "家"},
+        {"name": "tedaholding_ratio", "value": "30", "unit": "%"},
+        {"name": "jinlian_ratio", "value": "40", "unit": "%"},
+        {"name": "zhongke_ratio", "value": "30", "unit": "%"}
+      ]
+    },
+    {
+      "case_id": "cfqa-v1-009",
+      "reference_answer": "乐鑫科技2021年境外资产占总资产的比例为27.08%。",
+      "answer_facts": [
+        {"name": "overseas_asset_ratio", "value": "27.08", "unit": "%"}
+      ]
+    },
+    {
+      "case_id": "cfqa-v1-010",
+      "reference_answer": "一心堂2022年利息净支出为93,724,843.76元。",
+      "answer_facts": [
+        {"name": "net_interest_expense", "value": "93724843.76", "unit": "元"}
+      ]
+    },
+    {
+      "case_id": "cfqa-v1-011",
+      "reference_answer": "2019年两面针合并资产负债表中，应付股利期末余额为8,537,790.48元。",
+      "answer_facts": [
+        {"name": "dividend_payable", "value": "8537790.48", "unit": "元"}
+      ]
+    },
+    {
+      "case_id": "cfqa-v1-012",
+      "reference_answer": "福斯特2020年启动福20转债发行，募集资金17亿元，用于滁州基地光伏胶膜项目建设。",
+      "answer_facts": [
+        {"name": "convertible_bond_fundraising", "value": "1700000000", "unit": "元"}
+      ]
+    },
+    {
+      "case_id": "cfqa-v1-013",
+      "reference_answer": "浦发银行2021年资产负债率为91.66%。",
+      "answer_facts": [
+        {"name": "asset_liability_ratio", "value": "91.66", "unit": "%"}
+      ],
+      "calculation": {
+        "name": "asset_liability_ratio",
+        "formula": "7458539/8136757*100",
+        "expected_value": "91.66",
+        "unit": "%",
+        "numerator": {"name": "total_liabilities", "value": "7458539", "unit": "百万元"},
+        "denominator": {"name": "total_assets", "value": "8136757", "unit": "百万元"}
+      }
+    },
+    {
+      "case_id": "cfqa-v1-015",
+      "reference_answer": "高凌信息2022年商誉减值准备金额为3,468,604.61元。",
+      "answer_facts": [
+        {"name": "goodwill_impairment_provision", "value": "3468604.61", "unit": "元"}
+      ]
+    },
+    {
+      "case_id": "cfqa-v1-020",
+      "reference_answer": "天津发展公司2019年混合所有制改革中，标段一引入持股40%的战略投资者，标段二引入持股30%的战略投资者。",
+      "answer_facts": [
+        {"name": "first_investor_ratio", "value": "40", "unit": "%"},
+        {"name": "second_investor_ratio", "value": "30", "unit": "%"}
+      ]
+    }
   ]
 }

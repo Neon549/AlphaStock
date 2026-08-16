@@ -1,6 +1,6 @@
 # CFQA 中文财报 RAG 评测报告
 
-更新时间：2026-08-16
+更新时间：2026-08-17
 
 ## 结论摘要
 
@@ -29,6 +29,7 @@ CFQA 现在是 AlphaStock 的中文年报问答主评测来源。FinanceBench �
 | CFQA 页码映射抽样队列 | 120 | 固定随机种子 `20260813`；已完成其中 20 条官方来源解析 | 映射进度，不是 RAG Gold |
 | CFQA 页锚定检索子集 v1 | 9 条、7 份年报、3,319 个文档块 | 证据 ID 已生成；独立人工复核仍待完成 | 历史候选 Recall@10、MRR、NDCG、引用命中率 |
 | CFQA 页锚定检索子集 v2 | 20 条、19 份年报、8,972 个文档块 | PDF 哈希锁定、Evidence ID 已生成；独立人工复核仍待完成 | 扩展候选 Hit@10、Recall@10、MRR、NDCG、引用命中率 |
+| CFQA v2 规范化评测副本 | 20 条、19 份年报、8,972 个文档块 | 页码修复、金额/单位/计算标签已写入派生副本；不覆盖原始数据，仍是 candidate | 证据值覆盖、计算分子/分母覆盖、答案和引用诊断 |
 
 2,036 条记录不是 2,036 条已经可直接评估的 RAG Gold。CFQA 给出了答案页码，
 但 AlphaStock 仍必须下载匹配的官方年报、固定文件哈希和 PDF 页序，再把页码映射
@@ -58,9 +59,13 @@ Recall@10 从之前 9 条样本的 77.78% 回落到 61.25%，说明 9 条结果�
 结论。BGE 在扩展样本上仍未提升，原因可能是候选池太小、表格结构没有显式编码、
 页级证据和自然语言问题之间存在格式差异；这仍不等于 BGE 在完整 CFQA 上无效。
 
-这次端到端脚本返回 `judged_cases=0`。原因是当前 CFQA 页锚定候选尚未完成
-独立答案判定，不能据此报告 `answer_accuracy` 或 `grounded_answer_accuracy`。
-当前报告只发布检索和引用页诊断，不发布答案正确率。
+端到端评测现在已经可以对已规范化的数值题运行确定性判定，但仍要区分两种结果：
+`evidence_pack` 只把 Top-k 证据打包，用来测“证据是否已被检索到”；它不是模型答案质量。
+`configured_llm` 才是实际回答生成路径，后续应使用人工或稳定的模型裁判评估答案。
+当前规范化副本的 BM25 公司/报告期约束诊断（`k=10`）为：直接事实值覆盖率
+`12/13=92.31%`，计算题分子/分母证据覆盖率 `1/2=50%`。这两个数字比单独的
+`answer_accuracy` 更适合定位当前问题：002 已找到 2520 和 3109，但仍需回答器计算
+`-18.94%`；013 的资产负债率需要重新召回 p18 的两条证据。
 
 本轮页面视觉核对记录见：[CFQA_V2_VISUAL_REVIEW.md](CFQA_V2_VISUAL_REVIEW.md)。
 其中 17 条支持保留当前页，004、006、013 需要修复证据页；这份记录仍是
@@ -136,6 +141,28 @@ python -m evaluation.apply_cfqa_review `
   --out runtime/reports/cfqa-v1-20.rag.visual-repaired.jsonl
 ```
 
+### 数值、金额和计算标签规范化
+
+在视觉复核之后，规范化清单还会把已经核对过的答案事实写入派生副本：
+
+```powershell
+python -m evaluation.apply_cfqa_review `
+  --cases runtime/reports/cfqa-v1-20.rag.jsonl `
+  --chunks runtime/reports/cfqa-v1-20.chunks.jsonl `
+  --manifest evaluation/datasets/cfqa_v2_visual_repairs.json `
+  --out runtime/reports/cfqa-v1-20.rag.normalized.jsonl
+
+python -m evaluation.frozen_dataset `
+  --kind rag `
+  --tier candidate `
+  --dataset runtime/reports/cfqa-v1-20.rag.normalized.jsonl
+```
+
+当前规范化内容包括：002 的外购煤数量及变化率公式、004 的中标价和采购量单位、
+006 的存货金额、013 的资产负债率分子/分母，以及其他已视觉核对的金额和比例。
+原始 `cfqa-v1-20.rag.jsonl` 永远保留；规范化副本带有
+`normalized_pending_independent_human_review` 标记，不提升为正式 Gold。
+
 ## 复现实验
 
 在项目根目录执行：
@@ -199,15 +226,20 @@ BGE 端到端离线诊断：
 ```powershell
 $env:HF_HUB_OFFLINE = "1"
 python -m evaluation.run_rag_e2e_eval `
-  --cases runtime/reports/cfqa-v1-20.rag.jsonl `
+  --cases runtime/reports/cfqa-v1-20.rag.normalized.jsonl `
   --chunks runtime/reports/cfqa-v1-20.chunks.jsonl `
   --source-manifest runtime/external/cfqa_v1_sources_resolved.json `
   --k 10 `
-  --retriever bm25_entity_period_scoped_reranked `
-  --generator extractive `
+  --retriever bm25_entity_period_scoped `
+  --generator evidence_pack `
   --judge deterministic `
-  --out runtime/reports/cfqa-v1-20.e2e.bge.deterministic.json
+  --out runtime/reports/cfqa-v1-20.e2e.normalized.bm25.evidence-pack.json
 ```
+
+`evidence_pack` 是证据覆盖诊断基线；它会把 Top-k 片段全部放入答案并引用对应页码，
+因此不能把它的 `answer_accuracy` 当成大模型回答准确率。重点查看报告中的
+`direct_fact_value_support_rate` 和 `calculation_operand_support_rate`。实际模型回答
+应使用 `--generator configured_llm`，并另行审核答案、单位、公式和引用。
 
 `runtime/external` 和 `runtime/reports` 是运行时目录，不把外部数据和生成报告
 直接提交到代码仓库；依赖的提交号、源文件哈希、映射状态和评测协议保存在本文档
@@ -215,8 +247,9 @@ python -m evaluation.run_rag_e2e_eval `
 
 ## 下一步
 
-1. 对已解析的 20 条候选逐条复核 PDF 页序、表格行列、单位和答案是否真的由该页支持。
+1. 完成规范化副本中 20 条候选的金额、单位、正负号和计算式复核。
 2. 从剩余 100 条映射队列中继续扩展不同公司和报告年份的官方年报。
-3. 为数值题补充分子、分母、单位和计算过程标签，之后才运行答案正确率与拒答评测。
-4. 若 BGE 继续重排，先把 BM25 候选池扩大到 Top-50/Top-100，并加入表格结构和
+3. 为新增数值题统一补充分子、分母、单位、证据页和计算过程标签。
+4. 先用 BM25、证据覆盖诊断和确定性数值判定建立稳定基线，再对比 BGE；若 BGE
+   继续重排，先把 BM25 候选池扩大到 Top-50/Top-100，并加入表格结构和
    公司/报告期保护规则，避免正确证据被无约束重排挤出。

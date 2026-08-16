@@ -58,3 +58,25 @@ def test_apply_repairs_rejects_gold_manifest() -> None:
 
     with pytest.raises(ValueError, match="must remain non-Gold"):
         apply_repairs([], [], manifest)
+
+
+def test_apply_repairs_applies_answer_normalization() -> None:
+    manifest = {
+        "dataset_tier": "visual_repaired_pending_independent_review",
+        "reviewer_role": "assistant_visual_auditor",
+        "human_review_required": True,
+        "promotion_eligible": False,
+        "repairs": [],
+        "answer_normalizations": [{
+            "case_id": "case-1",
+            "reference_answer": "已修正",
+            "answer_facts": [{"name": "amount", "value": "12.50", "unit": "元"}],
+            "calculation": {"formula": "10+2.5", "expected_value": "12.50"},
+        }],
+    }
+
+    result = apply_repairs([{"id": "case-1", "expected": {}}], [], manifest)
+
+    assert result[0]["reference_answer"] == "已修正"
+    assert result[0]["expected"]["answer_facts"][0]["value"] == "12.50"
+    assert result[0]["expected"]["calculation"]["formula"] == "10+2.5"
