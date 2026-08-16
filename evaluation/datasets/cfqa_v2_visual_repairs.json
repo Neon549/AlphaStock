@@ -1,0 +1,29 @@
+{
+  "schema_version": "cfqa-visual-repair-v1",
+  "dataset_tier": "visual_repaired_pending_independent_review",
+  "source_corpus_version": "sha256:7709b4d36f17845d51e780c7dd99ac7647a5e2e60a6e9a4cded1de98555d1b91",
+  "review_record": "evaluation/datasets/CFQA_V2_VISUAL_REVIEW.md",
+  "reviewer_role": "assistant_visual_auditor",
+  "human_review_required": true,
+  "promotion_eligible": false,
+  "repairs": [
+    {
+      "case_id": "cfqa-v1-004",
+      "evidence_ids": ["600351-2019-annual:p33:c2"],
+      "reason": "目标药品的中标价格和采购量位于 p33，原始 p34 是相邻但不对应的表格。"
+    },
+    {
+      "case_id": "cfqa-v1-006",
+      "evidence_ids": ["688366-2020-annual:p109:c0"],
+      "reason": "28,263,248.47 元的存货金额位于 p109 资产负债表，原始 p175 是盈余公积。"
+    },
+    {
+      "case_id": "cfqa-v1-013",
+      "evidence_ids": [
+        "600000-2021-annual:p18:c1",
+        "600000-2021-annual:p18:c2"
+      ],
+      "reason": "资产负债率需要由 p18 的负债总额和资产总额计算，原始 p29 不是充分证据。"
+    }
+  ]
+}

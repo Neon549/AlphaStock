@@ -62,6 +62,10 @@ Recall@10 从之前 9 条样本的 77.78% 回落到 61.25%，说明 9 条结果�
 独立答案判定，不能据此报告 `answer_accuracy` 或 `grounded_answer_accuracy`。
 当前报告只发布检索和引用页诊断，不发布答案正确率。
 
+本轮页面视觉核对记录见：[CFQA_V2_VISUAL_REVIEW.md](CFQA_V2_VISUAL_REVIEW.md)。
+其中 17 条支持保留当前页，004、006、013 需要修复证据页；这份记录仍是
+`pending_independent_human_review`，不能直接作为正式 Gold。
+
 ## 自动证据审计与人工复核队列
 
 在不修改 Gold 标签的前提下，已对 v2 的 20 条候选运行确定性证据审计：
@@ -106,6 +110,31 @@ python -m evaluation.build_rag_label_review `
 只有在人工复核结果写回、具备审核人和审核时间，并通过 Evidence ID、页码、表格
 结构及答案支撑检查后，才允许把候选数据集层级从 `candidate_pending_independent_review`
 提升为正式 Gold。
+
+### 页码修复旁路对照
+
+为量化标签质量的影响，另以视觉核对建议修复 004、006、013 的副本运行了同一套
+BM25 检索。该副本明确标记为 `visual_repaired_pending_independent_review`，不替换
+上面的主结果：
+
+| 方法 | 原始副本 Hit@10 | 修复旁路 Hit@10 | 原始 Recall@10 | 修复旁路 Recall@10 | 修复旁路引用页命中率 |
+|---|---:|---:|---:|---:|---:|
+| BM25 全库 | 35.00% | 40.00% | 35.00% | 40.00% | 45.00% |
+| BM25 公司/报告期约束 | 55.00% | 60.00% | 51.25% | 56.25% | 60.00% |
+| BM25 公司/报告期约束 + 中文别名 | 65.00% | **70.00%** | 61.25% | **66.25%** | **70.00%** |
+
+修复旁路只能说明页级标注会改变检索指标，不能证明模型能力已经提升；待独立人工
+审核确认后，才可以重新生成正式评测报告。
+
+旁路副本可由机器可读的修复清单重建：
+
+```powershell
+python -m evaluation.apply_cfqa_review `
+  --cases runtime/reports/cfqa-v1-20.rag.jsonl `
+  --chunks runtime/reports/cfqa-v1-20.chunks.jsonl `
+  --manifest evaluation/datasets/cfqa_v2_visual_repairs.json `
+  --out runtime/reports/cfqa-v1-20.rag.visual-repaired.jsonl
+```
 
 ## 复现实验
 
