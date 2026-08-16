@@ -62,6 +62,51 @@ Recall@10 从之前 9 条样本的 77.78% 回落到 61.25%，说明 9 条结果�
 独立答案判定，不能据此报告 `answer_accuracy` 或 `grounded_answer_accuracy`。
 当前报告只发布检索和引用页诊断，不发布答案正确率。
 
+## 自动证据审计与人工复核队列
+
+在不修改 Gold 标签的前提下，已对 v2 的 20 条候选运行确定性证据审计：
+
+| 自动审计状态 | 数量 | 含义 |
+|---|---:|---|
+| `auto_accept_current` | 10 | 当前标注页通过页码、引用和部分事实锚点检查，可作为人工复核的优先通过候选 |
+| `needs_review` | 10 | 当前页与答案、表格、数值或检索建议之间存在不确定性，必须人工打开 PDF 核对 |
+
+自动审计不是人工审核，也不会把记录提升为 Gold；`auto_accept_current` 只表示
+确定性规则没有发现明显冲突。所有 20 条记录仍已写入人工复核队列，审核人需要逐项确认：
+
+1. CFQA 页码是否与下载 PDF 的页序一致；
+2. 答案对应的表格行、列和报告期是否正确；
+3. 数值的单位、正负号、百分比或计算关系是否完整；
+4. 当前 Evidence ID 和引用页是否足以支持答案；
+5. 证据不足时是否应该标记为拒答，而不是补写推断。
+
+本轮需要优先检查的候选为：`cfqa-v1-002`、`003`、`004`、`006`、`008`、`009`、
+`011`、`013`、`014`、`018`。这些记录的当前页仍保留在数据中，自动检索给出的其他页
+只作为人工定位提示，不能直接替换当前标签。
+
+自动审计和人工队列均为可重复生成的运行时产物：
+
+```powershell
+python -m evaluation.auto_review_rag_candidates `
+  --cases runtime/reports/cfqa-v1-20.rag.jsonl `
+  --chunks runtime/reports/cfqa-v1-20.chunks.jsonl `
+  --source-manifest runtime/external/cfqa_v1_sources_resolved.json `
+  --ablation runtime/reports/cfqa-v1-20.bm25.json `
+  --top-k 10 `
+  --out runtime/reports/cfqa-v1-20.auto-review.json
+
+python -m evaluation.build_rag_label_review `
+  --cases runtime/reports/cfqa-v1-20.rag.jsonl `
+  --chunks runtime/reports/cfqa-v1-20.chunks.jsonl `
+  --source-manifest runtime/external/cfqa_v1_sources_resolved.json `
+  --ablation runtime/reports/cfqa-v1-20.bm25.json `
+  --out runtime/reports/cfqa-v1-20.human-review-queue.json
+```
+
+只有在人工复核结果写回、具备审核人和审核时间，并通过 Evidence ID、页码、表格
+结构及答案支撑检查后，才允许把候选数据集层级从 `candidate_pending_independent_review`
+提升为正式 Gold。
+
 ## 复现实验
 
 在项目根目录执行：
