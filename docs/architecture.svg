@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="1390" viewBox="0 0 980 1390" role="img" aria-labelledby="title desc">
+  <title id="title">AlphaStock 系统架构</title>
+  <desc id="desc">从用户请求进入接口与认证，经控制平面和统一 Harness，分为研究与投资分支，经过工具网关和证据层，最后进入输出门并产生发布审核或安全阻断结果。</desc>
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="5" stdDeviation="6" flood-color="#0f172a" flood-opacity="0.12"/>
+    </filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 12 6 L 0 12 z" fill="#64748b"/>
+    </marker>
+    <style>
+      .canvas { fill: #ffffff; }
+      .node { stroke-width: 2; filter: url(#shadow); }
+      .user { fill: #ede9fe; stroke: #7c3aed; }
+      .runtime { fill: #dbeafe; stroke: #2563eb; }
+      .branch { fill: #e0e7ff; stroke: #4f46e5; }
+      .evidence { fill: #dcfce7; stroke: #16a34a; }
+      .governance { fill: #fef3c7; stroke: #d97706; }
+      .title { fill: #0f172a; font: 700 24px "Microsoft YaHei", "Noto Sans SC", Arial, sans-serif; }
+      .label { fill: #0f172a; font: 700 22px "Microsoft YaHei", "Noto Sans SC", Arial, sans-serif; }
+      .detail { fill: #475569; font: 400 16px "Microsoft YaHei", "Noto Sans SC", Arial, sans-serif; }
+      .connector { fill: none; stroke: #64748b; stroke-width: 3; marker-end: url(#arrow); }
+      .branch-line { fill: none; stroke: #6366f1; stroke-width: 3; marker-end: url(#arrow); }
+      .result-label { fill: #92400e; font: 700 18px "Microsoft YaHei", "Noto Sans SC", Arial, sans-serif; }
+    </style>
+  </defs>
+
+  <rect class="canvas" x="0" y="0" width="980" height="1390" rx="24"/>
+  <text class="title" x="490" y="38" text-anchor="middle">AlphaStock 统一投研运行流程</text>
+
+  <path class="connector" d="M490 125 V175"/>
+  <path class="connector" d="M490 275 V325"/>
+  <path class="connector" d="M490 425 V475"/>
+
+  <rect class="node user" x="300" y="60" width="380" height="65" rx="16"/>
+  <text class="label" x="490" y="88" text-anchor="middle">用户 / MCP 客户端</text>
+  <text class="detail" x="490" y="111" text-anchor="middle">提交研究问题或任务</text>
+
+  <rect class="node runtime" x="250" y="175" width="480" height="100" rx="16"/>
+  <text class="label" x="490" y="215" text-anchor="middle">接口与认证</text>
+  <text class="detail" x="490" y="244" text-anchor="middle">身份校验 · 跨域控制 · 请求保护</text>
+
+  <rect class="node runtime" x="210" y="325" width="560" height="100" rx="16"/>
+  <text class="label" x="490" y="365" text-anchor="middle">控制平面</text>
+  <text class="detail" x="490" y="394" text-anchor="middle">意图路由 · 事件记录 · 运行生命周期</text>
+
+  <rect class="node runtime" x="170" y="475" width="640" height="100" rx="16"/>
+  <text class="label" x="490" y="515" text-anchor="middle">统一 AlphaStockHarness</text>
+  <text class="detail" x="490" y="544" text-anchor="middle">断点 · 恢复 · 重试 · 追踪 · 统一权限边界</text>
+
+  <path class="branch-line" d="M490 575 V625 H275 V680"/>
+  <path class="branch-line" d="M490 575 V625 H705 V680"/>
+
+  <rect class="node branch" x="80" y="680" width="390" height="105" rx="16"/>
+  <text class="label" x="275" y="721" text-anchor="middle">研究分支</text>
+  <text class="detail" x="275" y="751" text-anchor="middle">对话 · 文档检索 · 市场证据</text>
+
+  <rect class="node branch" x="510" y="680" width="390" height="105" rx="16"/>
+  <text class="label" x="705" y="721" text-anchor="middle">投资分支</text>
+  <text class="detail" x="705" y="751" text-anchor="middle">分析 · 回测 · 风险整理</text>
+
+  <path class="branch-line" d="M275 785 V825 H490 V865"/>
+  <path class="branch-line" d="M705 785 V825 H490 V865"/>
+
+  <rect class="node runtime" x="210" y="865" width="560" height="100" rx="16"/>
+  <text class="label" x="490" y="905" text-anchor="middle">工具网关与沙箱</text>
+  <text class="detail" x="490" y="934" text-anchor="middle">仅允许已注册的只读能力</text>
+
+  <path class="connector" d="M490 965 V1015"/>
+  <rect class="node evidence" x="150" y="1015" width="680" height="115" rx="16"/>
+  <text class="label" x="490" y="1055" text-anchor="middle">数据与证据层</text>
+  <text class="detail" x="490" y="1084" text-anchor="middle">市场 · 文档 · 新闻 · 回测</text>
+  <text class="detail" x="490" y="1108" text-anchor="middle">PostgreSQL + pgvector · 可追溯证据引用</text>
+
+  <path class="connector" d="M490 1130 V1180"/>
+  <rect class="node governance" x="210" y="1180" width="560" height="100" rx="16"/>
+  <text class="label" x="490" y="1220" text-anchor="middle">输出门</text>
+  <text class="detail" x="490" y="1249" text-anchor="middle">证据 · 引用 · 风险检查</text>
+
+  <path class="connector" d="M490 1280 V1315 H275 V1340"/>
+  <path class="connector" d="M490 1280 V1315 H705 V1340"/>
+  <rect class="node governance" x="70" y="1340" width="410" height="42" rx="12"/>
+  <rect class="node governance" x="500" y="1340" width="410" height="42" rx="12"/>
+  <text class="result-label" x="275" y="1367" text-anchor="middle">研究草稿 / 发布审核</text>
+  <text class="result-label" x="705" y="1367" text-anchor="middle">证据不足或高风险 / 安全阻断</text>
+</svg>

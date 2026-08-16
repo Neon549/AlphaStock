@@ -34,33 +34,7 @@
 
 ## 系统架构
 
-```mermaid
-flowchart TD
-    U["用户 / MCP 客户端"] --> API["接口与认证"]
-    API --> CP["控制平面<br/>意图 · 事件 · 运行生命周期"]
-    CP --> H["统一 AlphaStockHarness<br/>断点 · 恢复 · 追踪"]
-
-    H --> R["研究分支<br/>对话 · 文档检索 · 市场证据"]
-    H --> I["投资分支<br/>分析 · 回测 · 风险整理"]
-    R --> G["工具网关与沙箱<br/>只允许已注册的只读能力"]
-    I --> G
-
-    G --> E["数据与证据层<br/>市场 · 文档 · 新闻 · 回测<br/>PostgreSQL + pgvector"]
-    E --> O["输出门<br/>证据 · 引用 · 风险检查"]
-    O --> P["研究草稿 / 发布审核"]
-    O --> X["证据不足或高风险<br/>安全阻断"]
-
-    classDef user fill:#EDE9FE,stroke:#7C3AED,color:#1F2937;
-    classDef runtime fill:#DBEAFE,stroke:#2563EB,color:#1F2937;
-    classDef branch fill:#E0E7FF,stroke:#4F46E5,color:#1F2937;
-    classDef evidence fill:#DCFCE7,stroke:#16A34A,color:#1F2937;
-    classDef governance fill:#FEF3C7,stroke:#D97706,color:#1F2937;
-    class U user;
-    class API,CP,H,G runtime;
-    class R,I branch;
-    class E evidence;
-    class O,P,X governance;
-```
+![AlphaStock 统一投研运行流程](docs/architecture.svg)
 
 每次运行从经过认证的主体和受限的执行配置开始。工具结果会被持久化为证据工件；公开接口只返回安全的 `trace_summary`，原始提示词和详细工具载荷保留在私有审计存储中。
 
