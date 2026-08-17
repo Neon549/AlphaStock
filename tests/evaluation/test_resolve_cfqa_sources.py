@@ -1,4 +1,4 @@
-from evaluation.resolve_cfqa_sources import choose_full_report
+from evaluation.resolve_cfqa_sources import _year, choose_full_report
 
 
 def test_choose_full_report_prefers_original_over_revision_and_summary() -> None:
@@ -42,3 +42,9 @@ def test_choose_full_report_strips_cninfo_highlight_markup() -> None:
 
     assert result is not None
     assert result["title"] == "某公司2021年年度报告"
+
+
+def test_year_supports_cfqa_two_digit_years() -> None:
+    assert _year({"query": "某公司20年营业收入"}) == 2020
+    assert _year({"query": "某公司19年前五大股东"}) == 2019
+    assert _year({"query": "某公司2021年营业收入"}) == 2021

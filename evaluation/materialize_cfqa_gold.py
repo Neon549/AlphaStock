@@ -8,6 +8,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from evaluation.resolve_cfqa_sources import _year
+
 
 def _compact(value: str) -> str:
     return re.sub(r"\s+", "", value or "")
@@ -55,13 +57,32 @@ def main() -> int:
 
     output: list[dict[str, Any]] = []
     unresolved: list[dict[str, Any]] = []
+    document_rows = list({str(chunk["document_id"]): chunk for chunk in chunks}.values())
     for candidate in candidates:
         code = str(candidate["stock_code"])
-        year = re.search(r"20\d{2}", str(candidate["query"]))
-        document_rows = list({str(chunk["document_id"]): chunk for chunk in chunks}.values())
-        matching_documents = [document for document in document_rows if str(document.get("security_code")) == code]
+        year_value = _year(candidate)
+        year = str(year_value) if year_value else None
+        source = candidate.get("source") if isinstance(candidate.get("source"), dict) else None
+        if candidate.get("status") == "source_resolution_pending" and not source:
+            unresolved.append({
+                **candidate,
+                "resolution_error": {
+                    "reason": "source_resolution_pending",
+                    "security_code": code,
+                    "query_year": year,
+                },
+            })
+            continue
+        source_document_id = str(source.get("document_id")) if source and source.get("document_id") else ""
+        if source_document_id:
+            matching_documents = [
+                document for document in document_rows
+                if str(document.get("document_id")) == source_document_id
+            ]
+        else:
+            matching_documents = [document for document in document_rows if str(document.get("security_code")) == code]
         if year:
-            year_matches = [document for document in matching_documents if str(year.group()) in str(document.get("report_period"))]
+            year_matches = [document for document in matching_documents if str(year) in str(document.get("report_period"))]
             if year_matches:
                 matching_documents = year_matches
         if len(matching_documents) != 1:
@@ -70,7 +91,7 @@ def main() -> int:
                 "status": "source_resolution_pending",
                 "resolution_error": {
                     "security_code": code,
-                    "query_year": year.group() if year else None,
+                    "query_year": year,
                     "matching_documents": [document.get("document_id") for document in matching_documents],
                 },
             })
@@ -81,8 +102,20 @@ def main() -> int:
         for page in pages:
             page_chunks = by_document_page.get((document_id, page), [])
             if not page_chunks:
-                raise SystemExit(f"{candidate['id']}: page {page} missing from indexed corpus")
+                unresolved.append({
+                    **candidate,
+                    "status": "page_mapping_pending",
+                    "resolution_error": {
+                        "reason": "page_missing_from_index",
+                        "document_id": document_id,
+                        "page": page,
+                    },
+                })
+                selected = []
+                break
             selected.append(max(page_chunks, key=lambda chunk: _score(candidate["reference_answer"], chunk["text"])))
+        if not selected or len(selected) != len(pages):
+            continue
         output.append(
             {
                 "id": candidate["id"],

@@ -1,5 +1,77 @@
 # CFQA 中文财报 RAG 评测报告
 
+## CFQA v1 120 条扩展批次（2026-08-17）
+
+为避免固定 10 条或 20 条样本被误读成完整结论，本轮从已固定的 CFQA 测试候选中抽取 120 条，按股票代码和报告年份解析官方 CNINFO 年报，并建立独立的页级检索语料。该批次仍属于 `candidate_pending_independent_review`，不是最终 Gold，也不用于简历或线上质量声明。
+
+### 数据和可复现性
+
+| 项目 | 结果 |
+|---|---:|
+| CFQA 候选题数 | 120 |
+| 成功完成来源和页码物化 | 114 |
+| 未纳入检索分母 | 6（5 条官方来源待补，1 条 PDF 页码超出当前解析页数） |
+| 官方年报 PDF | 89 份 |
+| PDF 解析器 | PyMuPDF |
+| 检索块 | 40,864（600 字符，重叠 80） |
+| 来源快照哈希 | `sha256:290e9cc3d6bd0dd105bc7cd6995a29a6d3a32134bda507fd59163239ad2fb467` |
+| 检索语料哈希 | `sha256:c7e97afa3ba5e592e59b9f123be239165ba5ed247f9866e67006318622c94053` |
+
+### BM25 页级检索基线（k=10）
+
+| 方法 | 样本数 | Hit@10 | Recall@10 | MRR | NDCG@10 | 引用页命中率 |
+|---|---:|---:|---:|---:|---:|---:|
+| BM25 全库 | 114 | 24.56% | 24.56% | 0.1174 | 0.1476 | 32.46% |
+| BM25 公司/报告期约束 | 114 | 62.28% | 61.62% | 0.3914 | 0.4443 | 66.67% |
+| BM25 公司/报告期约束 + 中文别名 | 114 | **64.04%** | **63.38%** | **0.3963** | **0.4522** | **68.42%** |
+
+这轮结果说明，公司和报告期约束是当前 CFQA 检索的主要收益来源；中文金融术语别名在此批次上继续带来小幅改善。结果只评价页级证据召回，不等同于答案正确率、金额正确率或投资建议质量。BGE 重排应在同一个 114 条分母和同一个候选池上做后续对照，不能和这轮 BM25 结果混报。
+
+### 当前人工复核边界
+
+本批次已自动完成来源、报告期、PDF 哈希和页级 Evidence ID 的生成，但仍需人工逐条确认：CFQA 页码是否对应 PDF 的打印页码、答案金额和单位是否一致、表格年份列是否正确、计算题的分子分母是否完整。未完成复核前，6 条未物化记录必须保持在 unresolved 队列中，不能通过填充相邻页或其他年份报告来扩大分母。
+
+### 扩展批次复现命令
+
+```powershell
+python -m evaluation.resolve_cfqa_sources `
+  --input runtime/external/cfqa_test_mapping_120.jsonl `
+  --output runtime/external/cfqa_v1_120_candidates_resolved.jsonl `
+  --sources-out runtime/external/cfqa_v1_120_sources_resolved.json
+
+python -m evaluation.download_corpus `
+  --sources runtime/external/cfqa_v1_120_sources_resolved.json `
+  --target-dir runtime/external/cfqa_v1_120_pdfs `
+  --snapshot-out runtime/external/cfqa_v1_120_snapshot.json `
+  --reuse-existing
+
+python -m evaluation.build_pdf_corpus `
+  --lock runtime/external/cfqa_v1_120_snapshot.json `
+  --download-dir runtime/external/cfqa_v1_120_pdfs `
+  --source-manifest runtime/external/cfqa_v1_120_sources_resolved.json `
+  --chunks-out runtime/reports/cfqa-v1-120.chunks.jsonl `
+  --metadata-out runtime/reports/cfqa-v1-120.corpus.json
+
+$meta = Get-Content runtime/reports/cfqa-v1-120.corpus.json -Raw | ConvertFrom-Json
+python -m evaluation.materialize_cfqa_gold `
+  --candidates runtime/external/cfqa_v1_120_candidates_resolved.jsonl `
+  --chunks runtime/reports/cfqa-v1-120.chunks.jsonl `
+  --corpus-version $meta.candidate_index_snapshot `
+  --output runtime/reports/cfqa-v1-120.rag.jsonl `
+  --unresolved-output runtime/reports/cfqa-v1-120.unresolved.jsonl
+
+python -m evaluation.run_candidate_rag_eval `
+  --cases runtime/reports/cfqa-v1-120.rag.jsonl `
+  --chunks runtime/reports/cfqa-v1-120.chunks.jsonl `
+  --source-manifest runtime/external/cfqa_v1_120_sources_resolved.json `
+  --k 10 `
+  --methods bm25_global bm25_entity_period_scoped bm25_entity_period_scoped_alias `
+  --dataset-tier external_cfqa_candidate_pending_independent_review `
+  --out runtime/reports/cfqa-v1-120.bm25.json
+```
+
+评测下载器支持 `--reuse-existing`：只有已存在且以 `%PDF` 开头的完整文件才会复用，损坏或 `.part` 文件仍会重新下载，避免重复运行时浪费网络和时间，同时不改变数据快照的哈希记录。
+
 更新时间：2026-08-17
 
 ## 结论摘要

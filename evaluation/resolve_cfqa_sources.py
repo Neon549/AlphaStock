@@ -24,6 +24,7 @@ ANNOUNCEMENT_URL = f"{CNINFO}/new/hisAnnouncement/query"
 PDF_PREFIX = "https://static.cninfo.com.cn/"
 TAG_RE = re.compile(r"<[^>]+>")
 YEAR_RE = re.compile(r"(?:19|20)\d{2}")
+SHORT_YEAR_RE = re.compile(r"(?<!\d)(\d{2})年")
 
 
 def _headers() -> dict[str, str]:
@@ -49,9 +50,14 @@ def _code(value: Any) -> str:
 
 def _year(row: dict[str, Any]) -> int | None:
     for field in ("query", "reference_answer"):
-        match = YEAR_RE.search(str(row.get(field, "")))
+        text = str(row.get(field, ""))
+        match = YEAR_RE.search(text)
         if match:
             return int(match.group())
+        short_match = SHORT_YEAR_RE.search(text)
+        if short_match:
+            short_year = int(short_match.group(1))
+            return 2000 + short_year if short_year <= 30 else 1900 + short_year
     return None
 
 

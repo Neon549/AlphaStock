@@ -60,11 +60,33 @@ def _display_path(path: Path) -> str:
         return path.resolve().as_posix()
 
 
-def _download(document: dict[str, Any], target_dir: Path, *, timeout_seconds: float) -> dict[str, Any]:
+def _record_local_pdf(document: dict[str, Any], target: Path) -> dict[str, Any]:
+    """Return snapshot metadata for a verified local PDF."""
+
+    return {
+        **document,
+        "local_path": _display_path(target),
+        "byte_size": target.stat().st_size,
+        "sha256": _sha256(target),
+    }
+
+
+def _download(
+    document: dict[str, Any],
+    target_dir: Path,
+    *,
+    timeout_seconds: float,
+    reuse_existing: bool = False,
+) -> dict[str, Any]:
     target_dir = target_dir.resolve()
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / f"{document['document_id']}.pdf"
     temporary = target.with_suffix(".part")
+    if reuse_existing and target.is_file():
+        # Only reuse complete PDF files. A stale or partial file must be
+        # downloaded again so a snapshot never silently records bad bytes.
+        if target.read_bytes().startswith(b"%PDF"):
+            return _record_local_pdf(document, target)
     response = requests.get(
         str(document["source_url"]),
         timeout=(10, timeout_seconds),
@@ -77,12 +99,7 @@ def _download(document: dict[str, Any], target_dir: Path, *, timeout_seconds: fl
         raise ValueError(f"{document['document_id']}: expected PDF bytes, got {content_type}")
     temporary.write_bytes(content)
     temporary.replace(target)
-    return {
-        **document,
-        "local_path": _display_path(target),
-        "byte_size": target.stat().st_size,
-        "sha256": _sha256(target),
-    }
+    return _record_local_pdf(document, target)
 
 
 def download_corpus(
@@ -91,12 +108,21 @@ def download_corpus(
     *,
     timeout_seconds: float = 90.0,
     limit: int | None = None,
+    reuse_existing: bool = False,
 ) -> dict[str, Any]:
     source_manifest = source_manifest.resolve()
     target_dir = target_dir.resolve()
     sources = load_sources(source_manifest)
     documents = sources["documents"][:limit] if limit else sources["documents"]
-    snapshot_documents = [_download(document, target_dir, timeout_seconds=timeout_seconds) for document in documents]
+    snapshot_documents = [
+        _download(
+            document,
+            target_dir,
+            timeout_seconds=timeout_seconds,
+            reuse_existing=reuse_existing,
+        )
+        for document in documents
+    ]
     snapshot_digest = hashlib.sha256(
         json.dumps(snapshot_documents, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
@@ -117,12 +143,18 @@ def main() -> int:
     parser.add_argument("--snapshot-out", type=Path, required=True)
     parser.add_argument("--timeout-seconds", type=float, default=90.0)
     parser.add_argument("--limit", type=int)
+    parser.add_argument(
+        "--reuse-existing",
+        action="store_true",
+        help="reuse existing complete PDFs in target-dir and avoid re-downloading them",
+    )
     args = parser.parse_args()
     snapshot = download_corpus(
         args.sources,
         args.target_dir,
         timeout_seconds=args.timeout_seconds,
         limit=args.limit,
+        reuse_existing=args.reuse_existing,
     )
     args.snapshot_out.parent.mkdir(parents=True, exist_ok=True)
     args.snapshot_out.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

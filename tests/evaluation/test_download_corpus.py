@@ -33,3 +33,21 @@ def test_download_accepts_a_relative_custom_target_directory(tmp_path: Path, mon
         record = _download({"document_id": "doc", "source_url": "https://example.test/doc.pdf"}, target, timeout_seconds=1)
 
     assert record["local_path"].endswith("runtime/download-corpus-test/doc.pdf")
+
+
+def test_download_can_reuse_a_complete_existing_pdf(tmp_path: Path) -> None:
+    target_dir = tmp_path / "corpus"
+    target_dir.mkdir()
+    target = target_dir / "doc.pdf"
+    target.write_bytes(b"%PDF-1.7 cached")
+
+    with patch("evaluation.download_corpus.requests.get", side_effect=AssertionError("network call")):
+        record = _download(
+            {"document_id": "doc", "source_url": "https://example.test/doc.pdf"},
+            target_dir,
+            timeout_seconds=1,
+            reuse_existing=True,
+        )
+
+    assert record["byte_size"] == len(b"%PDF-1.7 cached")
+    assert record["sha256"]
