@@ -14,12 +14,14 @@ from api.auth import logout as _logout
 from api.auth import register as _register
 from api.auth import verify_token as _verify
 from api.auth_reset import router as reset_router
+from api.auth_social import router as social_router
 from api.security import require_actor, require_owned_conversation
 from db import execute
 
 
 router = APIRouter()
 router.include_router(reset_router)
+router.include_router(social_router)
 
 
 class AuthRequest(BaseModel):

@@ -2,7 +2,7 @@ import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth, useModal } from '../store'
 
 export default function Navbar() {
-  const { token, username, logout } = useAuth()
+  const { token, username, displayName, logout } = useAuth()
   const openModal = useModal(s => s.open)
   const navigate = useNavigate()
   const location = useLocation()
@@ -87,7 +87,7 @@ export default function Navbar() {
         <div className="nav-actions">
           {token ? (
             <>
-              <span className="nav-username">👤 {username}</span>
+              <span className="nav-username">👤 {displayName || username}</span>
               <button className="btn-start" onClick={() => goProtected('/chat')} style={{ padding: '10px 20px' }}>
                 进入 AI
               </button>

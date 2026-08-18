@@ -92,6 +92,21 @@ CREATE INDEX IF NOT EXISTS idx_users_email     ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id);
 CREATE INDEX IF NOT EXISTS idx_users_token     ON users(token);
 
+-- 第三方登录账号绑定；旧 users/google_id 数据保持不变。
+CREATE TABLE IF NOT EXISTS oauth_accounts (
+    id                BIGSERIAL PRIMARY KEY,
+    user_id           INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider          TEXT NOT NULL CHECK (provider IN ('wechat', 'qq', 'google')),
+    provider_user_id  TEXT NOT NULL,
+    email             TEXT,
+    profile           JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (provider, provider_user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_accounts_user_id ON oauth_accounts(user_id);
+CREATE INDEX IF NOT EXISTS idx_oauth_accounts_provider ON oauth_accounts(provider, provider_user_id);
+
 -- ── 登录 token ────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS tokens (
     token      TEXT PRIMARY KEY,

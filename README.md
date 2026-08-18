@@ -169,6 +169,9 @@ npm run preview
 | `TECHLENS_BASE_URL` | 可选 | 独立部署的技术分析模型服务地址。 |
 | `LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY`、`LANGFUSE_HOST` | 可选 | Langfuse 运行追踪；连接失败不会阻止 API 启动。 |
 | `GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET`、`GOOGLE_REDIRECT_URI` | 可选 | Google OAuth；后端会验证 Google Token，不信任前端直接提交的用户资料。 |
+| `WECHAT_APP_ID`、`WECHAT_APP_SECRET`、`WECHAT_REDIRECT_URI` | 可选 | 微信网站 OAuth；密钥只在后端读取，回调需要登记到微信开放平台。 |
+| `QQ_APP_ID`、`QQ_APP_KEY`、`QQ_REDIRECT_URI` | 可选 | QQ 互联 OAuth；回调需要登记到 QQ 应用后台。 |
+| `FRONTEND_URL`、`OAUTH_COOKIE_SECURE` | 可选 | OAuth 回调后的前端地址和 HTTPS Cookie 开关；详见 `docs/oauth_login.md`。 |
 | `PUBLICATION_REVIEWER_USERS` | 启用发布审核时 | 逗号分隔的独立审核人白名单。 |
 | `ALPHASTOCK_CORS_ORIGINS` | 生产环境 | 显式配置的浏览器来源列表。 |
 | `ALPHASTOCK_SANDBOX_NETWORK=deny` | 可选 | 事故期间关闭已注册的网络型研究工具。 |

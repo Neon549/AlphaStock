@@ -67,6 +67,16 @@ export default function AuthModal() {
     }
   }, [isOpen])
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const redirectError = params.get('login_error')
+    if (!redirectError) return
+    const provider = redirectError.startsWith('wechat_') ? '微信' : redirectError.startsWith('qq_') ? 'QQ' : '第三方'
+    open('login')
+    setError(`${provider}登录失败，请稍后重试（${redirectError.split('_').slice(1).join('_') || 'unknown'}）`)
+    window.history.replaceState({}, document.title, window.location.pathname + window.location.hash)
+  }, [open])
+
   useEffect(() => () => clearGoogleWatchdog(), [])
 
   useEffect(() => {
@@ -144,7 +154,7 @@ export default function AuthModal() {
         // The backend validates the Google-issued bearer token and derives
         // identity from Google, rather than trusting browser-supplied profile fields.
         const d = await api.googleToken(tokenResponse.access_token)
-        login(d.token, d.username)
+        login(d.token, d.username, d.display_name)
         close()
       } catch (e) {
         const msg = e.message || ''
@@ -175,11 +185,11 @@ export default function AuthModal() {
   }
 
   function handleWechatLogin() {
-    alert('微信网页登录需要在微信开放平台完成开发者资质、网站应用和登录能力审核，并配置 AppID、AppSecret、授权回调域名后才能启用。当前尚未配置。')
+    if (!loading && !googleLoading) window.location.assign('/api/v1/auth/wechat')
   }
 
   function handleQQLogin() {
-    alert('QQ 登录需要在 QQ 互联/腾讯开放平台创建并审核网站应用，配置 AppID、AppKey、回调地址和备案域名后才能启用。当前尚未配置。')
+    if (!loading && !googleLoading) window.location.assign('/api/v1/auth/qq')
   }
 
   return (
