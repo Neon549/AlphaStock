@@ -249,7 +249,6 @@ python -m pytest -q tests
 - **后端**：`.github/workflows/deploy.yml` 安装 `requirements-ci.txt`、运行离线测试，并在 `main` 分支通过后部署。
 - **前端**：`.github/workflows/deploy-frontend.yml` 在修改 `frontend/` 的拉取请求中执行 `npm ci && npm run build`，并在 `main` 分支推送成功后部署构建产物。
 
-部署工作流使用名为 `SERVER_HOST`、`SERVER_USER` 和 `NEON_ALPHA` 的 GitHub Actions Secrets。请仅在 GitHub Secrets 中保存这些值，绝不能将其写入并提交 `.env` 文件。
 
 ## 延伸文档
 
@@ -258,15 +257,4 @@ python -m pytest -q tests
 - [远程 MCP](MCP_REMOTE.md)：已支持工具、权限范围、部署变量与冒烟客户端。
 - [控制平面](control_plane/README.md)：事件生命周期和运行时归属。
 - [Agent 学习](agent_learning/README.md)：评测驱动的学习工件与审核边界。
-
-## 当前限制
-
-- 市场数据和模型响应可能延迟、不完整或不可用。带时间戳的证据记录不代表其必然正确。
-- 回测是历史模拟；在解读结果前，仍应自行设置合理的时间窗口、费率、滑点、基准和样本外验证。
-- 本仓库是 A 股研究产品，不是券商、投资顾问或订单管理系统。AlphaStock 输出的任何内容都不是证券买卖指令。
-- 评测报告只包含有明确范围的工程测量。没有完成其文档规定的审核流程前，不得将候选集或基准指标宣传为生产质量结论。
-
-## 参与贡献
-
-欢迎提交问题反馈和代码改动。请保持改动聚焦；修改行为时补充测试；提交代码前运行离线测试。请勿提交 API 密钥、供应商令牌、数据库连接串、上传文档或生成的运行时文件。
 
