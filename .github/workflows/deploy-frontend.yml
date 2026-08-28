@@ -53,7 +53,7 @@ jobs:
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
+          username: deploy
           key: ${{ secrets.NEON_ALPHA }}
           source: frontend/react-app/dist/*
           target: /home/ubuntu/frontend/Alpha_stock_frontend/react-app/dist/
@@ -62,6 +62,6 @@ jobs:
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
+          username: deploy
           key: ${{ secrets.NEON_ALPHA }}
-          script: systemctl reload nginx
+          script: sudo systemctl reload nginx.service
