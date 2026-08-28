@@ -19,6 +19,13 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+# Running ``python scripts/export_e2e_intake.py`` puts ``scripts/`` rather
+# than the project root on ``sys.path``. Keep this production CLI directly
+# runnable while still allowing imports from the repository packages.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from evaluation.financial_agent_e2e_intake import (
     REDACTION_VERSION,
     STRICT_FORBIDDEN_KEYS,
@@ -224,7 +231,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Export controlled, de-identified E2E intake JSONL")
     parser.add_argument("--labels", type=Path, help="Completed human labels keyed by HMAC source_fingerprint")
     parser.add_argument("--label-template-out", type=Path, help="Write a safe worksheet for human labeling, without producing intake")
-    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--out", type=Path, help="Write materialized intake JSONL (required with --labels)")
     parser.add_argument("--document-snapshot", default=os.getenv("ALPHASTOCK_GOLD_DOCUMENT_SNAPSHOT", ""))
     parser.add_argument("--tool-snapshot", default=os.getenv("ALPHASTOCK_GOLD_TOOL_SNAPSHOT", ""))
     parser.add_argument("--collected-at", default=None)
@@ -233,6 +240,8 @@ def main() -> int:
     try:
         if bool(args.labels) == bool(args.label_template_out):
             raise ValueError("provide exactly one of --label-template-out or --labels")
+        if args.labels and args.out is None:
+            raise ValueError("--out is required with --labels")
         records = _read_production_records()
         export_key = os.getenv("ALPHASTOCK_EXPORT_FINGERPRINT_KEY", "")
         if args.label_template_out:
@@ -255,6 +264,9 @@ def main() -> int:
         )
     except Exception as exc:
         print(f"controlled export refused: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    if args.out is None:
+        print("controlled export refused: ValueError: --out is required with --labels", file=sys.stderr)
         return 1
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(
