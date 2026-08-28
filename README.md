@@ -249,7 +249,7 @@ python -m pytest -q tests
 - **后端**：`.github/workflows/deploy.yml` 安装 `requirements-ci.txt`、运行离线测试，并在 `main` 分支通过后部署。
 - **前端**：`.github/workflows/deploy-frontend.yml` 在修改 `frontend/` 的拉取请求中执行 `npm ci && npm run build`，并在 `main` 分支推送成功后部署构建产物。
 
-部署工作流使用名为 `SERVER_HOST`、`SERVER_USER` 和 `NEON_ALPHA` 的 GitHub Actions Secrets。请仅在 GitHub Secrets 中保存这些值，绝不能将其写入并提交 `.env` 文件。
+部署工作流使用固定的最小权限 `deploy` 账户，以及名为 `SERVER_HOST` 和 `NEON_ALPHA` 的 GitHub Actions Secrets。首次迁移前，请通过现有 root/OrcaTerm 会话安全上传本仓库的 `scripts/provision_deploy_user.sh` 并执行它；不要先推送此工作流变更。确认下一次部署成功后再移除 root 的 GitHub Actions 密钥。请仅在 GitHub Secrets 中保存这些值，绝不能将其写入并提交 `.env` 文件。
 
 ## 延伸文档
 
