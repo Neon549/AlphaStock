@@ -90,9 +90,11 @@ jobs:
           script: |
             set -Eeuo pipefail
             cd /home/ubuntu/Alpha_stock
+            repository_url="https://github.com/Neon549/AlphaStock.git"
             # The deploy account intentionally does not own the application
             # tree. Scope Git's ownership exception to this exact path rather
             # than weakening the server-wide safe-directory policy.
+            git -c safe.directory=/home/ubuntu/Alpha_stock remote set-url origin "${repository_url}"
             previous_revision="$(git -c safe.directory=/home/ubuntu/Alpha_stock rev-parse HEAD)"
 
             rollback() {
@@ -104,13 +106,37 @@ jobs:
               source /home/ubuntu/venv/bin/activate
               pip install -r requirements.txt -q
               sudo systemctl restart alphastock-api.service
-              curl --fail --silent --show-error --max-time 3 \
-                http://127.0.0.1:8000/health/live >/dev/null
+              recovered=0
+              for rollback_attempt in $(seq 1 18); do
+                if sudo systemctl is-active --quiet alphastock-api.service \
+                  && (curl --fail --silent --max-time 3 http://127.0.0.1:8000/health/live >/dev/null \
+                    || curl --fail --silent --max-time 3 http://127.0.0.1:8000/health >/dev/null); then
+                  recovered=1
+                  break
+                fi
+                sleep 5
+              done
+              if [ "${recovered}" -ne 1 ]; then
+                echo "Rollback service did not become healthy within 90 seconds" >&2
+              fi
               exit "${exit_code}"
             }
             trap rollback ERR
 
-            git -c safe.directory=/home/ubuntu/Alpha_stock pull --ff-only
+            pulled=0
+            for pull_attempt in $(seq 1 3); do
+              if git -c safe.directory=/home/ubuntu/Alpha_stock \
+                -c http.version=HTTP/1.1 pull --ff-only origin main; then
+                pulled=1
+                break
+              fi
+              echo "Git pull attempt ${pull_attempt}/3 failed; retrying in 5 seconds"
+              sleep 5
+            done
+            if [ "${pulled}" -ne 1 ]; then
+              echo "Unable to fetch ${repository_url}" >&2
+              false
+            fi
             source /home/ubuntu/venv/bin/activate
             pip install -r requirements.txt -q
             sudo systemctl restart alphastock-api.service
