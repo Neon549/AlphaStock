@@ -90,14 +90,17 @@ jobs:
           script: |
             set -Eeuo pipefail
             cd /home/ubuntu/Alpha_stock
-            previous_revision="$(git rev-parse HEAD)"
+            # The deploy account intentionally does not own the application
+            # tree. Scope Git's ownership exception to this exact path rather
+            # than weakening the server-wide safe-directory policy.
+            previous_revision="$(git -c safe.directory=/home/ubuntu/Alpha_stock rev-parse HEAD)"
 
             rollback() {
               exit_code=$?
               trap - ERR
               set +e
               echo "Deployment failed; rolling back to ${previous_revision}"
-              git reset --hard "${previous_revision}"
+              git -c safe.directory=/home/ubuntu/Alpha_stock reset --hard "${previous_revision}"
               source /home/ubuntu/venv/bin/activate
               pip install -r requirements.txt -q
               sudo systemctl restart alphastock-api.service
@@ -107,7 +110,7 @@ jobs:
             }
             trap rollback ERR
 
-            git pull --ff-only
+            git -c safe.directory=/home/ubuntu/Alpha_stock pull --ff-only
             source /home/ubuntu/venv/bin/activate
             pip install -r requirements.txt -q
             sudo systemctl restart alphastock-api.service
