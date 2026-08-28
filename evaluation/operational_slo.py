@@ -21,6 +21,7 @@ REQUIRED_BOOLEAN_METRICS = (
     "retry_attempted",
     "retry_succeeded",
     "fallback_used",
+    "cost_estimation_complete",
 )
 
 
@@ -53,6 +54,8 @@ def _validate_rows(rows: list[dict[str, Any]]) -> list[str]:
         if not isinstance(metrics, dict):
             errors.append(f"{variant}/{run_id}: run_metrics is required")
             continue
+        if metrics.get("schema_version") != "run_metrics/v2":
+            errors.append(f"{variant}/{run_id}: run_metrics.schema_version must be run_metrics/v2")
         for field in ("elapsed_ms", "concurrency", "input_tokens", "output_tokens", "cost_usd"):
             if not _number(metrics.get(field)) or float(metrics[field]) < 0:
                 errors.append(f"{variant}/{run_id}: run_metrics.{field} must be non-negative number")
@@ -61,6 +64,8 @@ def _validate_rows(rows: list[dict[str, Any]]) -> list[str]:
                 errors.append(f"{variant}/{run_id}: run_metrics.{field} must be boolean")
         if metrics.get("retry_succeeded") and not metrics.get("retry_attempted"):
             errors.append(f"{variant}/{run_id}: retry_succeeded cannot be true without retry_attempted")
+        if metrics.get("cost_estimation_complete") is False:
+            errors.append(f"{variant}/{run_id}: cost estimation is incomplete")
     return errors
 
 

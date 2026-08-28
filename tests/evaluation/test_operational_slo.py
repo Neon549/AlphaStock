@@ -6,6 +6,7 @@ def _run(run_id, elapsed=100, *, provider_failed=False, tool_failed=False, retry
         "variant": "bge-default",
         "run_id": run_id,
         "run_metrics": {
+            "schema_version": "run_metrics/v2",
             "elapsed_ms": elapsed,
             "concurrency": 2,
             "input_tokens": 1000,
@@ -16,6 +17,7 @@ def _run(run_id, elapsed=100, *, provider_failed=False, tool_failed=False, retry
             "retry_attempted": retry_attempted,
             "retry_succeeded": retry_succeeded,
             "fallback_used": fallback_used,
+            "cost_estimation_complete": True,
         },
     }
 

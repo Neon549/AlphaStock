@@ -180,32 +180,36 @@ class InvestmentRuntime:
             },
         ) as telemetry:
             result = self._run(event, run_id)
-        agent_trace = result.payload.get("workflow_result", {}).get("agent_trace", [])
-        workflow_result = result.payload.get("workflow_result")
-        metrics = telemetry.summary(agent_trace, workflow_result)
-        result.payload["run_metrics"] = metrics
+            agent_trace = result.payload.get("workflow_result", {}).get("agent_trace", [])
+            workflow_result = result.payload.get("workflow_result")
+            metrics = telemetry.summary(agent_trace, workflow_result)
+            telemetry.final_metrics = metrics
+            result.payload["run_metrics"] = metrics
+            result.payload["trace_summary"] = telemetry.public_summary(metrics)
+            if metrics.get("llm_draft_only_call_count") and isinstance(workflow_result, dict):
+                reason = "a reduced-capability backup model was used; advisory output is blocked"
+                workflow_result["model_degradation"] = {
+                    "mode": "draft_only",
+                    "call_count": metrics["llm_draft_only_call_count"],
+                }
+                workflow_result["human_review_required"] = False
+                workflow_result["publish_status"] = "blocked"
+                workflow_result["publish_reasons"] = list(dict.fromkeys([
+                    *(workflow_result.get("publish_reasons") or []), reason,
+                ]))
+                result.payload["human_review_required"] = False
+                result.payload["publish_status"] = "blocked"
+                result.payload["status"] = "blocked"
+                result.payload["publish_reasons"] = list(dict.fromkeys([
+                    *(result.payload.get("publish_reasons") or []), reason,
+                ]))
+                result.payload["model_degradation"] = workflow_result["model_degradation"]
+            # Private audit data can contain full tool artifacts.  RunStore flushes
+            # it to PostgreSQL; HTTP adapters must not return it to clients.
+            result.payload["_run_telemetry"] = telemetry.export()
+        # The scope finalizer owns the authoritative wall-clock measurement.
+        # Refresh the copied public view after it has updated run_metrics.
         result.payload["trace_summary"] = telemetry.public_summary(metrics)
-        if metrics.get("llm_draft_only_call_count") and isinstance(workflow_result, dict):
-            reason = "a reduced-capability backup model was used; advisory output is blocked"
-            workflow_result["model_degradation"] = {
-                "mode": "draft_only",
-                "call_count": metrics["llm_draft_only_call_count"],
-            }
-            workflow_result["human_review_required"] = False
-            workflow_result["publish_status"] = "blocked"
-            workflow_result["publish_reasons"] = list(dict.fromkeys([
-                *(workflow_result.get("publish_reasons") or []), reason,
-            ]))
-            result.payload["human_review_required"] = False
-            result.payload["publish_status"] = "blocked"
-            result.payload["status"] = "blocked"
-            result.payload["publish_reasons"] = list(dict.fromkeys([
-                *(result.payload.get("publish_reasons") or []), reason,
-            ]))
-            result.payload["model_degradation"] = workflow_result["model_degradation"]
-        # Private audit data can contain full tool artifacts.  RunStore flushes
-        # it to PostgreSQL; HTTP adapters must not return it to clients.
-        result.payload["_run_telemetry"] = telemetry.export()
         result.trace.append({"event": "run_metrics", **metrics})
         return result
 

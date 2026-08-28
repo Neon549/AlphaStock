@@ -87,6 +87,12 @@ _business_router_state = {
     "news_index_state": "pending",
 }
 
+# Health routes stay independent from the heavy RAG/LLM imports. This lets the
+# orchestrator distinguish a live process from one that is ready for traffic.
+from api.health import HealthService, build_health_router
+
+app.include_router(build_health_router(HealthService(_business_router_state)))
+
 
 @app.get("/")
 def root():
@@ -95,6 +101,7 @@ def root():
 
 @app.get("/health")
 def health():
+    """Legacy liveness alias. New infrastructure should use /health/live."""
     return {"status": "ok"}
 
 

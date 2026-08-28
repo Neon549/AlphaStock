@@ -37,11 +37,20 @@ class RunObservabilityTests(unittest.TestCase):
             record_external_call(target="market-price", ok=True, latency_ms=3.0)
         summary = telemetry.summary([{"event": "skill_result", "latency_ms": 8.0}])
         self.assertEqual(summary["run_id"], "run-fixture")
+        self.assertEqual(summary["schema_version"], "run_metrics/v2")
         self.assertEqual(summary["input_tokens"], 100)
         self.assertEqual(summary["prompt_cache_hit_tokens"], 50)
         self.assertEqual(summary["llm_backup_call_count"], 1)
         self.assertEqual(summary["llm_draft_only_call_count"], 1)
         self.assertEqual(summary["tool_call_count"], 1)
+        self.assertEqual(summary["concurrency"], 1)
+        self.assertFalse(summary["provider_failed"])
+        self.assertFalse(summary["tool_failed"])
+        self.assertTrue(summary["fallback_used"])
+        self.assertFalse(summary["cost_estimation_complete"])
+        self.assertEqual(summary["missing_usage_call_count"], 1)
+        self.assertEqual(summary["pricing_version"], "2026-08-28")
+        self.assertAlmostEqual(summary["cost_usd"], 0.000039)
         self.assertEqual(summary["execution_status"]["external_http"]["status"], "success")
         self.assertEqual(telemetry.export()["tool_artifacts"]["tool-result:price:abc"]["content"], "fixture")
         self.assertIsNone(current_run_id())
@@ -75,6 +84,47 @@ class RunObservabilityTests(unittest.TestCase):
         self.assertNotIn("top_k", public)
         self.assertEqual(rag_span.call_count, 2)
         finish_trace.assert_called_once()
+        self.assertEqual(
+            finish_trace.call_args.args[1] if len(finish_trace.call_args.args) > 1 else finish_trace.call_args.kwargs["summary"],
+            telemetry.langfuse_summary(metrics),
+        )
+
+    def test_unknown_model_pricing_is_explicitly_incomplete(self):
+        with run_telemetry_scope("run-unknown-price") as telemetry:
+            record_llm_call(
+                model="private-model", latency_ms=1, success=True, used_backup=False,
+                usage={"input_tokens": 10, "output_tokens": 2},
+            )
+        summary = telemetry.summary()
+        self.assertFalse(summary["cost_estimation_complete"])
+        self.assertEqual(summary["unknown_pricing_models"], ["private-model"])
+
+    def test_failures_and_successful_retries_are_derived_from_real_trace_fields(self):
+        with run_telemetry_scope("run-retry") as telemetry:
+            record_llm_call(
+                model="deepseek-chat", latency_ms=1, success=False, used_backup=False,
+                usage=None,
+                recovery={"provider_role": "primary", "attempt": 1, "recovery_action": "retry_primary"},
+            )
+            record_llm_call(
+                model="deepseek-chat", latency_ms=1, success=True, used_backup=False,
+                usage={"input_tokens": 10, "output_tokens": 2},
+                recovery={"provider_role": "primary", "attempt": 2, "recovery_action": "primary_success"},
+            )
+        summary = telemetry.summary([{
+            "event": "skill_result", "attempts": 2,
+            "retry_trace": [{"event": "retry_scheduled"}], "status": "completed",
+        }])
+        self.assertTrue(summary["provider_failed"])
+        self.assertFalse(summary["tool_failed"])
+        self.assertTrue(summary["retry_attempted"])
+        self.assertTrue(summary["retry_succeeded"])
+
+    def test_nested_scopes_capture_peak_process_concurrency(self):
+        with run_telemetry_scope("outer") as outer:
+            with run_telemetry_scope("inner") as inner:
+                self.assertEqual(outer.concurrency, 2)
+                self.assertEqual(inner.concurrency, 2)
 
     def test_redact_query_does_not_return_the_original_hashable_text(self):
         value = redact_query("身份证 11010519491231002X")

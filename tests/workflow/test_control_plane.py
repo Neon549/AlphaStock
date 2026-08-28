@@ -71,6 +71,12 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertEqual(result.route, "investment_agent_loop")
         self.assertEqual(calls[0]["stock_code"], "600519")
         self.assertEqual(result.payload["reliability_summary"]["retries_used"], 1)
+        self.assertEqual(result.payload["run_metrics"]["schema_version"], "run_metrics/v2")
+        self.assertGreaterEqual(result.payload["run_metrics"]["elapsed_ms"], 0)
+        self.assertEqual(
+            result.payload["trace_summary"]["elapsed_ms"],
+            result.payload["run_metrics"]["elapsed_ms"],
+        )
 
     def test_runtime_compiles_and_passes_a_multi_intent_task_plan_to_the_harness(self):
         calls = []

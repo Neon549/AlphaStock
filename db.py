@@ -22,12 +22,15 @@ from dotenv import load_dotenv
 
 # ── 加载环境变量 ──────────────────────────────────────────────────────
 env_path = Path(__file__).resolve().parent / ".env"
-load_dotenv(dotenv_path=env_path, override=True)
+# Deployment/systemd environment variables must win over repository-local
+# defaults. This is especially important for the controlled Gold exporter:
+# a developer's .env.pgvector must never redirect a production process.
+load_dotenv(dotenv_path=env_path, override=False)
 
 # 本地 pgvector Docker 开发库使用独立覆盖文件，避免改写包含线上/API 密钥的 .env。
 local_pgvector_env_path = Path(__file__).resolve().parent / ".env.pgvector"
 if local_pgvector_env_path.exists():
-    load_dotenv(dotenv_path=local_pgvector_env_path, override=True)
+    load_dotenv(dotenv_path=local_pgvector_env_path, override=False)
 
 POSTGRES_DSN = os.getenv("POSTGRES_DSN", "")
 

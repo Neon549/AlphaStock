@@ -1,6 +1,7 @@
 import unittest
 
 from evaluation.financial_agent_e2e_production_admission import build_production_admission_report, validate_controlled_runs
+from evaluation.financial_agent_e2e_review import case_sha256
 
 
 HASH = "sha256:" + "a" * 64
@@ -22,8 +23,12 @@ def _case():
 
 def _review(reviewer):
     return {
-        "case_id": "e2e-real-intake-real-1", "reviewer_id": reviewer, "reviewed_at": "2026-08-15",
-        "approved": True, "rubric_decisions": [{"id": "entity", "approved": True}],
+        "case_id": "e2e-real-intake-real-1", "case_sha256": case_sha256(_case()),
+        "reviewer_id": reviewer, "reviewed_at": "2026-08-15",
+        "approved": True,
+        "rubric_decisions": [
+            {"id": rubric["id"], "approved": True} for rubric in _case()["rubrics"]
+        ],
         "allowed_evidence": ["document:1:p8"], "failure_taxonomy": [],
     }
 

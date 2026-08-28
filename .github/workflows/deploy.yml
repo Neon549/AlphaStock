@@ -55,8 +55,29 @@ jobs:
           fi
           exit "$status"
 
-  deploy:
+  production-quality-gate:
     needs: regression
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        if: vars.ENFORCE_PRODUCTION_QUALITY_GATE == 'true'
+        with:
+          python-version: "3.11"
+      - name: Verify immutable production quality evidence
+        if: vars.ENFORCE_PRODUCTION_QUALITY_GATE == 'true'
+        run: |
+          python -m evaluation.release_quality_evidence \
+            --spec evaluation/releases/active/release-evidence.json \
+            --root . \
+            --out runtime/reports/release-quality-evidence.json
+      - name: Report staged gate status
+        if: vars.ENFORCE_PRODUCTION_QUALITY_GATE != 'true'
+        run: echo "Production Gold gate is staged; set ENFORCE_PRODUCTION_QUALITY_GATE=true only after real evidence is frozen."
+
+  deploy:
+    needs: [regression, production-quality-gate]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
@@ -67,9 +88,44 @@ jobs:
           username: deploy
           key: ${{ secrets.NEON_ALPHA }}
           script: |
+            set -Eeuo pipefail
             cd /home/ubuntu/Alpha_stock
+            previous_revision="$(git rev-parse HEAD)"
+
+            rollback() {
+              exit_code=$?
+              trap - ERR
+              set +e
+              echo "Deployment failed; rolling back to ${previous_revision}"
+              git reset --hard "${previous_revision}"
+              source /home/ubuntu/venv/bin/activate
+              pip install -r requirements.txt -q
+              sudo systemctl restart alphastock-api.service
+              curl --fail --silent --show-error --max-time 3 \
+                http://127.0.0.1:8000/health/live >/dev/null
+              exit "${exit_code}"
+            }
+            trap rollback ERR
+
             git pull --ff-only
             source /home/ubuntu/venv/bin/activate
             pip install -r requirements.txt -q
             sudo systemctl restart alphastock-api.service
-            echo "✅ Backend deployed successfully"
+
+            ready=0
+            for attempt in $(seq 1 18); do
+              if curl --fail --silent --show-error --max-time 3 \
+                http://127.0.0.1:8000/health/ready >/dev/null; then
+                ready=1
+                break
+              fi
+              echo "Readiness attempt ${attempt}/18 failed; retrying in 5 seconds"
+              sleep 5
+            done
+            if [ "${ready}" -ne 1 ]; then
+              echo "Readiness did not pass within 90 seconds"
+              false
+            fi
+
+            trap - ERR
+            echo "✅ Backend deployed and readiness verified"

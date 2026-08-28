@@ -1,0 +1,11 @@
+dataset_id,dataset_tier,split,variant,run_id,cases,judged_cases,retrieval_hit_at_k,recall_at_5,recall_at_10,recall_at_20,mrr,ndcg,citation_hit_rate,page_citation_accuracy,answer_accuracy,grounded_answer_accuracy,unsupported_answer_rate,abstention_compliance,faithfulness,answer_relevancy,final_task_success_rate,pass_at_4,pass_caret_4,tool_failure_rate,retry_recovery_rate,redundant_call_rate,avg_steps,p95_latency_ms,total_tokens,cost_usd,high_risk_failures,notes
+financebench-open-source-v1,external_gold,external_test,V0,RETRIEVAL_RUN_ONLY,,,,,,,,,,,,,,,,,,,,,,,,,,"Retrieval baseline: runtime/reports/paper-v0-financebench-retrieval.json; E2E pending"
+financebench-open-source-v1,external_gold,external_test,V1,NOT_RUN,,,,,,,,,,,,,,,,,,,,,,,,,,"Pending"
+financebench-open-source-v1,external_gold,external_test,V2,NOT_RUN,,,,,,,,,,,,,,,,,,,,,,,,,,"Pending"
+financebench-open-source-v1,external_gold,external_test,V3,NOT_RUN,,,,,,,,,,,,,,,,,,,,,,,,,,"Pending"
+financebench-open-source-v1,external_gold,external_test,V4-a,NOT_RUN,,,,,,,,,,,,,,,,,,,,,,,,,,"Pending ablation"
+financebench-open-source-v1,external_gold,external_test,V4-b,NOT_RUN,,,,,,,,,,,,,,,,,,,,,,,,,,"Pending ablation"
+financebench-open-source-v1,external_gold,external_test,V4-c,NOT_RUN,,,,,,,,,,,,,,,,,,,,,,,,,,"Pending ablation"
+financebench-open-source-v1,external_gold,external_test,V4-d,NOT_RUN,,,,,,,,,,,,,,,,,,,,,,,,,,"Pending ablation"
+financebench-open-source-v1,external_gold,external_test,V4-e,NOT_RUN,,,,,,,,,,,,,,,,,,,,,,,,,,"Pending ablation"
+financebench-open-source-v1,external_gold,external_test,V4-f,NOT_RUN,,,,,,,,,,,,,,,,,,,,,,,,,,"Pending ablation"

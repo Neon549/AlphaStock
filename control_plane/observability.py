@@ -32,6 +32,8 @@ class RunTelemetry:
     rag_events: list[dict[str, Any]] = field(default_factory=list)
     external_calls: list[dict[str, Any]] = field(default_factory=list)
     mcp_calls: list[dict[str, Any]] = field(default_factory=list)
+    concurrency: int = 1
+    final_metrics: dict[str, Any] | None = field(default=None, repr=False)
     lock: Lock = field(default_factory=Lock, repr=False)
 
     def summary(
@@ -73,6 +75,29 @@ class RunTelemetry:
         validations = [event for event in self.rag_events if event.get("event") == "citation_validation"]
         retrieved_chunk_count = sum(int(event.get("retrieved_chunk_count") or 0) for event in retrievals)
         failed_validations = sum(event.get("status") == "failed" for event in validations)
+        provider_retry_attempted = retry_calls > 0
+        provider_retry_succeeded = provider_retry_attempted and any(
+            bool(call.get("success")) and int(call.get("attempt") or 1) > 1
+            for call in self.llm_calls
+        )
+        tool_retry_attempted = any(
+            int(step.get("attempts") or 0) > 1
+            or any(item.get("event") == "retry_scheduled" for item in (step.get("retry_trace") or []))
+            for step in tool_events
+        )
+        tool_failed = any(
+            bool(step.get("tool_failure")) or str(step.get("status") or "").lower() == "failed"
+            for step in tool_events
+        ) or any(not bool(call.get("ok")) for call in [*self.external_calls, *self.mcp_calls])
+        tool_retry_succeeded = tool_retry_attempted and any(
+            not step.get("tool_failure")
+            and str(step.get("status") or "completed").lower() not in {"failed", "error"}
+            and (
+                int(step.get("attempts") or 0) > 1
+                or any(item.get("event") == "retry_scheduled" for item in (step.get("retry_trace") or []))
+            )
+            for step in tool_events
+        )
         model_status = (
             "failed" if failed_calls and not any(call.get("success") for call in self.llm_calls)
             else "degraded" if backup_calls or degraded_calls
@@ -97,9 +122,14 @@ class RunTelemetry:
             external_calls=self.external_calls,
             mcp_calls=self.mcp_calls,
         )
+        from config.model_pricing import estimate_llm_cost
+
+        cost = estimate_llm_cost(self.llm_calls)
         return {
+            "schema_version": "run_metrics/v2",
             "run_id": self.run_id,
             "elapsed_ms": round(self.elapsed_ms, 1),
+            "concurrency": self.concurrency,
             "llm_call_count": len(self.llm_calls),
             "llm_success_count": sum(int(bool(call.get("success"))) for call in self.llm_calls),
             "llm_failure_count": failed_calls,
@@ -118,10 +148,26 @@ class RunTelemetry:
             "citation_validation_failure_count": failed_validations,
             "citation_count": sum(int(event.get("citation_count") or 0) for event in validations),
             "model_status": model_status,
+            "provider_failed": failed_calls > 0,
+            "tool_failed": tool_failed,
+            "retry_attempted": provider_retry_attempted or tool_retry_attempted,
+            "retry_succeeded": provider_retry_succeeded or tool_retry_succeeded,
+            "fallback_used": backup_calls > 0,
             "models": models,
             "evidence_status": evidence_status,
             "execution_status": execution_status,
+            **cost,
             **totals,
+        }
+
+    def langfuse_summary(self, metrics: dict[str, Any]) -> dict[str, Any]:
+        """Send the canonical safe metrics contract to Langfuse."""
+        return {
+            "run_metrics": {
+                key: value for key, value in metrics.items()
+                if key not in {"evidence_status", "execution_status"}
+            },
+            **self.public_summary(metrics),
         }
 
     def public_summary(self, metrics: dict[str, Any]) -> dict[str, Any]:
@@ -159,6 +205,21 @@ class RunTelemetry:
 
 
 _ACTIVE_RUN: ContextVar[RunTelemetry | None] = ContextVar("active_run_telemetry", default=None)
+_CONCURRENCY_LOCK = Lock()
+_ACTIVE_TELEMETRIES: dict[int, RunTelemetry] = {}
+
+
+def _enter_concurrency(telemetry: RunTelemetry) -> None:
+    with _CONCURRENCY_LOCK:
+        _ACTIVE_TELEMETRIES[id(telemetry)] = telemetry
+        active = len(_ACTIVE_TELEMETRIES)
+        for item in _ACTIVE_TELEMETRIES.values():
+            item.concurrency = max(item.concurrency, active)
+
+
+def _exit_concurrency(telemetry: RunTelemetry) -> None:
+    with _CONCURRENCY_LOCK:
+        _ACTIVE_TELEMETRIES.pop(id(telemetry), None)
 
 
 @contextmanager
@@ -176,15 +237,21 @@ def run_telemetry_scope(
         input_sha256=hashlib.sha256(raw_query.encode("utf-8")).hexdigest() if raw_query else None,
         run_metadata=dict(metadata or {}),
     )
+    _enter_concurrency(telemetry)
     token = _ACTIVE_RUN.set(telemetry)
     _start_langfuse_run(run_id, query=query or "", metadata=metadata or {})
     try:
         yield telemetry
     finally:
         telemetry.elapsed_ms = (perf_counter() - telemetry.started_at) * 1000
-        metrics = telemetry.summary()
-        _finish_langfuse_run(run_id, telemetry.public_summary(metrics))
+        if telemetry.final_metrics is not None:
+            # The completed metrics object is also referenced by the runtime
+            # payload, so update the authoritative elapsed value in place.
+            telemetry.final_metrics["elapsed_ms"] = round(telemetry.elapsed_ms, 1)
+        metrics = telemetry.final_metrics or telemetry.summary()
+        _finish_langfuse_run(run_id, telemetry.langfuse_summary(metrics))
         _ACTIVE_RUN.reset(token)
+        _exit_concurrency(telemetry)
 
 
 def current_run_id() -> str | None:

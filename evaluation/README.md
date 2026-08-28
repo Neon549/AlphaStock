@@ -1,5 +1,10 @@
 # Evaluation guide
 
+For the real FinancialAgent E2E Gold collection, independent-review, freeze,
+evidence binding and staged CI activation workflow, follow
+[`docs/e2e_gold_rollout.md`](../docs/e2e_gold_rollout.md). Existing candidate
+fixtures and the 96-case review queue are not production Gold.
+
 ## Dataset integrity and claim boundary
 
 Before running or quoting an evaluation, verify the versioned dataset manifest:
@@ -89,9 +94,11 @@ python -m evaluation.operational_slo \
   --out runtime/reports/operational-slo.json
 ```
 
-The input must explicitly include concurrency, latency, provider/tool failure,
-retry, fallback, token and cost fields. Missing telemetry fails closed rather
-than being counted as zero failures.
+The input consumes the runtime-produced `run_metrics/v2` contract, including
+concurrency, latency, provider/tool failure, retry, fallback, token and cost
+fields. Missing telemetry or incomplete cost estimation fails closed rather
+than being counted as zero failures. See `docs/run_metrics.md` for the pricing
+and Langfuse boundary.
 
 Safety red-team runs are scored separately and can feed the release gate:
 
