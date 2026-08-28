@@ -69,7 +69,10 @@ for writable_path in "${APP_DIR}" "${VENV_DIR}"; do
   find "${writable_path}" -type d -exec chmod g+s {} +
 done
 if [[ -d "${FRONTEND_DIST_DIR}" ]]; then
-  chgrp -R "${OPS_GROUP}" "${FRONTEND_DIST_DIR}"
+  # scp-action extracts a tarball and preserves directory timestamps/modes.
+  # Group write alone is insufficient for that operation on existing assets,
+  # so make deploy the owner of this generated, static-output directory.
+  chown -R "${DEPLOY_USER}:${OPS_GROUP}" "${FRONTEND_DIST_DIR}"
   chmod -R g+rwX "${FRONTEND_DIST_DIR}"
   find "${FRONTEND_DIST_DIR}" -type d -exec chmod g+s {} +
 fi
