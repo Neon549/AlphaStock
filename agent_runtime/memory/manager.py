@@ -9,6 +9,7 @@ session state that helps continue a task.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import os
 from typing import Any, Protocol
 
 from control_plane.contracts import AgentEvent
@@ -69,6 +70,28 @@ def _safe_session_summary(parsed: dict[str, Any], workflow_result: dict[str, Any
         # A draft's decision is deliberately excluded until a human approval
         # writes it through LongTermMemory.
     }
+
+
+def _capture_session_id(event: AgentEvent, run_id: str | None) -> str | None:
+    """Return the persistence session only for explicit, controlled capture.
+
+    Normal requests without a client session must not retain raw prompt text.
+    The production intake window can opt in through an environment flag, while
+    an individual authenticated request may opt in through ``learning_capture``.
+    The generated session is internal and is never exported by the intake
+    contract.
+    """
+
+    if event.session_id:
+        return event.session_id
+    metadata = event.metadata or {}
+    enabled_by_event = bool(metadata.get("learning_capture"))
+    enabled_by_window = os.getenv("ALPHASTOCK_E2E_INTAKE_CAPTURE", "false").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    if (enabled_by_event or enabled_by_window) and run_id:
+        return f"capture-{run_id}"
+    return None
 
 
 class PostgresMemoryManager:
@@ -140,7 +163,8 @@ class PostgresMemoryManager:
         response_text: str = "",
         run_id: str | None = None,
     ) -> None:
-        if not event.session_id:
+        session_id = _capture_session_id(event, run_id)
+        if not session_id:
             return
         memory = _safe_session_summary(parsed, workflow_result)
         try:
@@ -157,7 +181,7 @@ class PostgresMemoryManager:
                             memory = EXCLUDED.memory,
                             updated_at = NOW()
                         """,
-                        (event.session_id, event.actor_id, self._json(memory)),
+                        (session_id, event.actor_id, self._json(memory)),
                     )
                     # Transcript is an audit/source record. Only a bounded,
                     # recent slice is later reintroduced into Context.
@@ -166,7 +190,7 @@ class PostgresMemoryManager:
                         INSERT INTO agent_session_transcript (session_id, actor_id, run_id, role, content)
                         VALUES (%s, %s, %s, 'user', %s)
                         """,
-                        (event.session_id, event.actor_id, run_id, event.content[:12_000]),
+                        (session_id, event.actor_id, run_id, event.content[:12_000]),
                     )
                     if response_text:
                         cur.execute(
@@ -174,12 +198,12 @@ class PostgresMemoryManager:
                             INSERT INTO agent_session_transcript (session_id, actor_id, run_id, role, content)
                             VALUES (%s, %s, %s, 'assistant', %s)
                             """,
-                            (event.session_id, event.actor_id, run_id, response_text[:12_000]),
+                            (session_id, event.actor_id, run_id, response_text[:12_000]),
                         )
             # This only enqueues a durable, bounded background job. It never
             # invokes a model or writes long-term memory on the user path.
             from agent_runtime.memory.maintenance import enqueue_extraction_if_due
-            enqueue_extraction_if_due(event.session_id, event.actor_id)
+            enqueue_extraction_if_due(session_id, event.actor_id)
         except Exception as exc:
             print(f"[Memory] session summary write failed: {exc}")
 

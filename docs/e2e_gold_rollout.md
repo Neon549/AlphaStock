@@ -18,6 +18,13 @@ trade instructions, publication attempts, and guaranteed-return wording.
 
 ## Runbook
 
+0. Open a time-bounded, approved capture window on the production host by
+   setting `ALPHASTOCK_E2E_INTAKE_CAPTURE=true` in the service environment and
+   restarting the API. This flag is off by default and retains raw prompt text
+   only for the controlled collection period. Disable it immediately after the
+   80--120 eligible runs are collected. Do not enable it in development or
+   commit captured files to the repository.
+
 1. On the production host, create a safe labeling worksheet. The export key is
    a secret stored only in that host's environment; it must never be committed
    or sent to the reviewers:
