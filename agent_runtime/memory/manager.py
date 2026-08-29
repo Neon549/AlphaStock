@@ -72,6 +72,16 @@ def _safe_session_summary(parsed: dict[str, Any], workflow_result: dict[str, Any
     }
 
 
+def _intake_capture_enabled(event: AgentEvent) -> bool:
+    """Return whether controlled intake capture was explicitly enabled."""
+
+    enabled_by_event = bool((event.metadata or {}).get("learning_capture"))
+    enabled_by_window = os.getenv("ALPHASTOCK_E2E_INTAKE_CAPTURE", "false").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    return enabled_by_event or enabled_by_window
+
+
 def _capture_session_id(event: AgentEvent, run_id: str | None) -> str | None:
     """Return the persistence session only for explicit, controlled capture.
 
@@ -84,12 +94,7 @@ def _capture_session_id(event: AgentEvent, run_id: str | None) -> str | None:
 
     if event.session_id:
         return event.session_id
-    metadata = event.metadata or {}
-    enabled_by_event = bool(metadata.get("learning_capture"))
-    enabled_by_window = os.getenv("ALPHASTOCK_E2E_INTAKE_CAPTURE", "false").strip().lower() in {
-        "1", "true", "yes", "on",
-    }
-    if (enabled_by_event or enabled_by_window) and run_id:
+    if _intake_capture_enabled(event) and run_id:
         return f"capture-{run_id}"
     return None
 

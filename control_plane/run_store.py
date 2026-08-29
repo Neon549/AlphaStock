@@ -43,6 +43,46 @@ class PostgresRunStore:
         from psycopg2.extras import Json
         return Json(value)
 
+    @staticmethod
+    def _capture_transcript(cur: Any, event: AgentEvent, result: AgentRunResult) -> None:
+        """Persist an opt-in intake transcript for every completed run.
+
+        MemoryManager is intentionally allowed to return early on routes that
+        do not have session context. The controlled Gold capture window must
+        still cover those completed runs, so this audit-store boundary is the
+        authoritative fallback. The ``run_id + role`` guard keeps normal
+        session-memory writes from creating duplicate rows.
+        """
+
+        from agent_runtime.memory.manager import _capture_session_id, _intake_capture_enabled
+
+        if not _intake_capture_enabled(event):
+            return
+        session_id = event.session_id or _capture_session_id(event, result.run_id)
+        if not session_id:
+            return
+        response_text = str(
+            result.payload.get("content")
+            or result.payload.get("decision")
+            or result.payload.get("answer")
+            or ""
+        ).strip()
+        rows = [("user", str(event.content or "")[:12_000]), ("assistant", response_text[:12_000])]
+        for role, content in rows:
+            if not content:
+                continue
+            cur.execute(
+                """
+                INSERT INTO agent_session_transcript (session_id, actor_id, run_id, role, content)
+                SELECT %s, %s, %s, %s, %s
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM agent_session_transcript
+                    WHERE run_id = %s AND role = %s
+                )
+                """,
+                (session_id, event.actor_id, result.run_id, role, content, result.run_id, role),
+            )
+
     def try_accept_event(self, event: AgentEvent) -> bool:
         try:
             from db import get_conn
@@ -172,6 +212,7 @@ class PostgresRunStore:
                             """,
                             (result.run_id, result_ref),
                         )
+                    self._capture_transcript(cur, event, result)
                     # Evaluation must not make core run auditing unavailable
                     # during a partial schema rollout or a curation outage.
                     cur.execute("SAVEPOINT agent_learning_artifacts")
